@@ -18,17 +18,21 @@ Localhost-only tool for comparing Plex library actors with TMDb movie credits to
 
 ## Setup
 1. Copy `.env.example` to `.env`.
-2. Start server:
+2. First-time install (creates `.venv` and installs dependencies):
 ```bat
-start.bat
+Install.bat
 ```
-3. Open `http://127.0.0.1:8787`.
+3. Next starts (skip reinstall):
+```bat
+start_server.bat
+```
+4. Open `http://127.0.0.1:8787`.
 
 ## Notes
 - Data is cached locally in `backend/data/plex_collector.db`.
 - Use `Scan Actors` on the Profile page after login.
 - This app prefers local Plex connections when available.
-- `start.bat` auto-creates or recreates `.venv` if it belongs to another machine/user.
+- `Install.bat` auto-creates or recreates `.venv` if it belongs to another machine/user.
 
 ## Publish To GitHub
 1. Initialize repository:
