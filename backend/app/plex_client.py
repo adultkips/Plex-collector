@@ -1,0 +1,401 @@
+﻿from __future__ import annotations
+
+from collections import Counter
+from datetime import datetime, UTC
+from typing import Any
+from urllib.parse import quote, urlparse, urlunparse
+import xml.etree.ElementTree as ET
+
+import requests
+from requests import ConnectionError as RequestsConnectionError
+
+from .config import (
+    PLEX_CLIENT_ID,
+    PLEX_DEVICE,
+    PLEX_PLATFORM,
+    PLEX_PRODUCT,
+    PLEX_VERSION,
+)
+from .utils import actor_id_from_name, normalize_title
+
+PLEX_BASE = 'https://plex.tv'
+
+
+def proxied_thumb_url(thumb_path: str | None) -> str | None:
+    if not thumb_path:
+        return None
+    return f"/api/plex/image?thumb={quote(thumb_path, safe='')}"
+
+
+def _normalize_actor_thumb(thumb: str | None) -> str | None:
+    if not thumb:
+        return None
+    if thumb.startswith('http://') or thumb.startswith('https://'):
+        return thumb
+    return proxied_thumb_url(thumb)
+
+
+def _plex_headers(token: str | None = None) -> dict[str, str]:
+    headers = {
+        'Accept': 'application/json',
+        'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
+        'X-Plex-Product': PLEX_PRODUCT,
+        'X-Plex-Version': PLEX_VERSION,
+        'X-Plex-Platform': PLEX_PLATFORM,
+        'X-Plex-Device': PLEX_DEVICE,
+    }
+    if token:
+        headers['X-Plex-Token'] = token
+    return headers
+
+
+def start_pin() -> dict[str, Any]:
+    response = requests.post(
+        f'{PLEX_BASE}/api/v2/pins',
+        headers=_plex_headers(),
+        params={'strong': 'true'},
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    code = payload['code']
+    pin_id = payload['id']
+    login_url = (
+        'https://app.plex.tv/auth#?'
+        f'clientID={quote(PLEX_CLIENT_ID)}&code={quote(code)}&context%5Bdevice%5D%5Bproduct%5D={quote(PLEX_PRODUCT)}'
+    )
+    return {'pin_id': pin_id, 'code': code, 'login_url': login_url}
+
+
+def check_pin(pin_id: int) -> dict[str, Any]:
+    response = requests.get(
+        f'{PLEX_BASE}/api/v2/pins/{pin_id}',
+        headers=_plex_headers(),
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return {
+        'authenticated': bool(payload.get('authToken')),
+        'auth_token': payload.get('authToken'),
+    }
+
+
+def get_account_profile(auth_token: str) -> dict[str, Any]:
+    response = requests.get(
+        f'{PLEX_BASE}/users/account.json',
+        headers=_plex_headers(auth_token),
+        timeout=20,
+    )
+    response.raise_for_status()
+    user = response.json()['user']
+    return {
+        'id': user.get('id'),
+        'username': user.get('username') or user.get('title'),
+        'email': user.get('email'),
+        'title': user.get('title'),
+        'thumb': user.get('thumb'),
+    }
+
+
+def get_resources(auth_token: str) -> list[dict[str, Any]]:
+    response = requests.get(
+        f'{PLEX_BASE}/api/resources',
+        headers=_plex_headers(auth_token),
+        params={'includeHttps': 1},
+        timeout=30,
+    )
+    response.raise_for_status()
+
+    root = ET.fromstring(response.text)
+    resources: list[dict[str, Any]] = []
+    for device in root.findall('Device'):
+        provides = device.attrib.get('provides', '')
+        if 'server' not in provides:
+            continue
+
+        token = device.attrib.get('accessToken') or auth_token
+        connections = []
+        for conn in device.findall('Connection'):
+            connections.append(
+                {
+                    'uri': conn.attrib.get('uri'),
+                    'address': conn.attrib.get('address'),
+                    'port': conn.attrib.get('port'),
+                    'protocol': conn.attrib.get('protocol'),
+                    'local': conn.attrib.get('local') == '1',
+                    'relay': conn.attrib.get('relay') == '1',
+                }
+            )
+
+        resources.append(
+            {
+                'name': device.attrib.get('name'),
+                'client_identifier': device.attrib.get('clientIdentifier'),
+                'owned': device.attrib.get('owned') == '1',
+                'access_token': token,
+                'connections': connections,
+            }
+        )
+    return resources
+
+
+def choose_preferred_server(resources: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def rank(server: dict[str, Any]) -> tuple[int, int]:
+        local_count = sum(1 for c in server['connections'] if c['local'] and not c['relay'])
+        return (1 if server['owned'] else 0, local_count)
+
+    ranked = sorted(resources, key=rank, reverse=True)
+    return ranked[0] if ranked else None
+
+
+def pick_server_uri(server: dict[str, Any]) -> str | None:
+    def with_ip_fallback(conn: dict[str, Any]) -> str | None:
+        uri = conn.get('uri')
+        if not uri:
+            return None
+        parsed = urlparse(uri)
+        host = parsed.hostname or ''
+        if host.endswith('.plex.direct') and conn.get('address') and conn.get('port'):
+            # Prefer direct LAN IP if plex.direct host cannot be resolved locally.
+            return f"http://{conn['address']}:{conn['port']}"
+        return uri
+
+    for conn in server['connections']:
+        if conn['local'] and not conn['relay']:
+            candidate = with_ip_fallback(conn)
+            if candidate:
+                return candidate
+    for conn in server['connections']:
+        if not conn['relay']:
+            candidate = with_ip_fallback(conn)
+            if candidate:
+                return candidate
+    if not server['connections']:
+        return None
+    return with_ip_fallback(server['connections'][0])
+
+
+def _host_ip_from_plex_direct(host: str) -> str | None:
+    if not host.endswith('.plex.direct'):
+        return None
+    prefix = host.split('.', 1)[0]
+    if not prefix:
+        return None
+    ip_candidate = prefix.replace('-', '.')
+    parts = ip_candidate.split('.')
+    if len(parts) != 4:
+        return None
+    if not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+        return None
+    return ip_candidate
+
+
+def _fallback_uri_from_plex_direct(uri: str) -> str | None:
+    parsed = urlparse(uri)
+    if not parsed.hostname:
+        return None
+    ip = _host_ip_from_plex_direct(parsed.hostname)
+    if not ip:
+        return None
+    port = parsed.port or 32400
+    return urlunparse(('http', f'{ip}:{port}', parsed.path, '', parsed.query, ''))
+
+
+def candidate_server_uris(server: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+
+    def add(value: str | None) -> None:
+        if value and value not in candidates:
+            candidates.append(value)
+
+    ordered_connections = sorted(
+        server.get('connections', []),
+        key=lambda c: (1 if c.get('local') else 0, 0 if c.get('relay') else 1),
+        reverse=True,
+    )
+
+    for conn in ordered_connections:
+        uri = conn.get('uri')
+        add(uri)
+
+        address = conn.get('address')
+        port = conn.get('port') or '32400'
+        protocol = conn.get('protocol') or 'https'
+        if address:
+            add(f'{protocol}://{address}:{port}')
+            add(f'http://{address}:{port}')
+            add(f'https://{address}:{port}')
+
+        add(_fallback_uri_from_plex_direct(uri) if uri else None)
+
+    add(pick_server_uri(server))
+    return candidates
+
+
+def _server_get(uri: str, token: str, path: str, params: dict[str, Any] | None = None) -> ET.Element:
+    target = f"{uri}{path}"
+    headers = _plex_headers(token)
+    headers['Accept'] = 'application/xml'
+    try:
+        response = requests.get(
+            target,
+            headers=headers,
+            params=params,
+            timeout=(6, 90),
+        )
+        response.raise_for_status()
+        body = response.text.lstrip()
+        if not body.startswith('<'):
+            raise RequestsConnectionError(f'Unexpected non-XML response from Plex endpoint: {target}')
+        return ET.fromstring(response.text)
+    except RequestsConnectionError:
+        fallback_base = _fallback_uri_from_plex_direct(uri)
+        if not fallback_base:
+            raise
+
+        fallback_target = f"{fallback_base}{path}"
+        response = requests.get(
+            fallback_target,
+            headers=headers,
+            params=params,
+            timeout=(6, 90),
+        )
+        response.raise_for_status()
+        body = response.text.lstrip()
+        if not body.startswith('<'):
+            raise RequestsConnectionError(f'Unexpected non-XML response from Plex endpoint: {fallback_target}')
+        return ET.fromstring(response.text)
+
+
+def fetch_movie_library_snapshot(
+    server_uri: str,
+    server_token: str,
+    server_client_identifier: str | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    sections_root = _server_get(server_uri, server_token, '/library/sections')
+    movie_sections = [
+        s for s in sections_root.findall('Directory') if s.attrib.get('type') == 'movie'
+    ]
+
+    actor_counter: Counter[str] = Counter()
+    actors_by_name: dict[str, dict[str, Any]] = {}
+    movie_rating_keys: list[str] = []
+    seen_movie_rating_keys: set[str] = set()
+    movies: list[dict[str, Any]] = []
+
+    for section in movie_sections:
+        section_key = section.attrib.get('key')
+        if not section_key:
+            continue
+
+        all_root = _server_get(
+            server_uri,
+            server_token,
+            f'/library/sections/{section_key}/all',
+            params={'type': 1, 'includeGuids': 1},
+        )
+
+        for video in all_root.findall('Video'):
+            title = video.attrib.get('title')
+            if not title:
+                continue
+            year_raw = video.attrib.get('year')
+            year = int(year_raw) if year_raw and year_raw.isdigit() else None
+            original_title = video.attrib.get('originalTitle')
+            rating_key = video.attrib.get('ratingKey')
+            if not rating_key:
+                continue
+            if rating_key in seen_movie_rating_keys:
+                continue
+            seen_movie_rating_keys.add(rating_key)
+            movie_rating_keys.append(rating_key)
+
+            tmdb_id: int | None = None
+            imdb_id: str | None = None
+            for guid in video.findall('Guid'):
+                guid_id = guid.attrib.get('id') or ''
+                if guid_id.startswith('tmdb://'):
+                    raw = guid_id.replace('tmdb://', '', 1)
+                    if raw.isdigit():
+                        tmdb_id = int(raw)
+                elif guid_id.startswith('imdb://'):
+                    imdb_id = guid_id.replace('imdb://', '', 1)
+
+            movies.append(
+                {
+                    'plex_rating_key': rating_key,
+                    'title': title,
+                    'original_title': original_title,
+                    'year': year,
+                    'tmdb_id': tmdb_id,
+                    'imdb_id': imdb_id,
+                    'normalized_title': normalize_title(title),
+                    'normalized_original_title': normalize_title(original_title) if original_title else None,
+                    'plex_web_url': (
+                        f'https://app.plex.tv/desktop#!/server/{server_client_identifier}/details?key=%2Flibrary%2Fmetadata%2F{rating_key}'
+                        if server_client_identifier
+                        else None
+                    ),
+                }
+            )
+
+            for role in video.findall('Role'):
+                actor_name = role.attrib.get('tag')
+                if not actor_name:
+                    continue
+                if actor_name not in actors_by_name:
+                    actors_by_name[actor_name] = {
+                        'actor_id': actor_id_from_name(actor_name),
+                        'name': actor_name,
+                        'image_url': _normalize_actor_thumb(role.attrib.get('thumb')),
+                    }
+
+    # Count actor appearances from full movie metadata (not section listing),
+    # because section listing can return truncated cast information.
+    if movie_rating_keys:
+        chunk_size = 40
+        for idx in range(0, len(movie_rating_keys), chunk_size):
+            batch = movie_rating_keys[idx : idx + chunk_size]
+            batch_root = _server_get(
+                server_uri,
+                server_token,
+                f"/library/metadata/{','.join(batch)}",
+            )
+            for video in batch_root.findall('Video'):
+                seen_in_movie: set[str] = set()
+                for role in video.findall('Role'):
+                    actor_name = role.attrib.get('tag')
+                    if (
+                        not actor_name
+                        or actor_name in seen_in_movie
+                        or actor_name not in actors_by_name
+                    ):
+                        continue
+                    seen_in_movie.add(actor_name)
+                    actor_counter[actor_name] += 1
+
+                    thumb_url = _normalize_actor_thumb(role.attrib.get('thumb'))
+                    if thumb_url and not actors_by_name[actor_name].get('image_url'):
+                        actors_by_name[actor_name]['image_url'] = thumb_url
+
+    now = datetime.now(UTC).isoformat()
+    actors = []
+    for actor_name, count in actor_counter.items():
+        base = actors_by_name[actor_name]
+        actors.append(
+            {
+                'actor_id': base['actor_id'],
+                'name': base['name'],
+                'appearances': count,
+                'image_url': base['image_url'],
+                'updated_at': now,
+            }
+        )
+
+    for movie in movies:
+        movie['updated_at'] = now
+
+    actors.sort(key=lambda x: (-x['appearances'], x['name']))
+    return actors, movies
