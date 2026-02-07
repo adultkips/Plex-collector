@@ -552,6 +552,8 @@ async function renderActors() {
 
     grid.innerHTML = '';
     for (const actor of visible) {
+      const downloadName = sanitizeDownloadQuery(actor.name);
+      const downloadUrl = `https://login.superbits.org/search?search=${encodeURIComponent(downloadName)}&extended=true`;
       const card = document.createElement('article');
       card.className = 'actor-card';
       card.innerHTML = `
@@ -559,9 +561,14 @@ async function renderActors() {
         <div class="caption">
           <div class="name">${actor.name}</div>
           <div class="count">${actor.appearances} from Plex</div>
+          <a class="badge-link badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>
         </div>
       `;
       applyImageFallback(card.querySelector('.poster'), ACTOR_PLACEHOLDER);
+      const downloadLink = card.querySelector('.badge-link');
+      downloadLink.addEventListener('click', (event) => {
+        event.stopPropagation();
+      });
       card.addEventListener('click', () => routeTo('actor-detail', actor.actor_id));
       grid.appendChild(card);
     }
