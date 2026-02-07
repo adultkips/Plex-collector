@@ -557,11 +557,13 @@ async function renderActors() {
       const card = document.createElement('article');
       card.className = 'actor-card';
       card.innerHTML = `
-        <img class="poster" src="${actor.image_url || ACTOR_PLACEHOLDER}" alt="${actor.name}" loading="lazy" />
+        <div class="poster-wrap">
+          <img class="poster" src="${actor.image_url || ACTOR_PLACEHOLDER}" alt="${actor.name}" loading="lazy" />
+          <a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>
+        </div>
         <div class="caption">
           <div class="name">${actor.name}</div>
           <div class="count">${actor.appearances} from Plex</div>
-          <a class="badge-link badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>
         </div>
       `;
       applyImageFallback(card.querySelector('.poster'), ACTOR_PLACEHOLDER);
