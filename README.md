@@ -1,4 +1,8 @@
-﻿# Plex Collector
+# Plex Collector
+
+[![Security](https://github.com/adultkips/Plex-collector/actions/workflows/security.yml/badge.svg)](https://github.com/adultkips/Plex-collector/actions/workflows/security.yml)
+[![CodeQL](https://github.com/adultkips/Plex-collector/actions/workflows/codeql.yml/badge.svg)](https://github.com/adultkips/Plex-collector/actions/workflows/codeql.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Localhost-only tool for comparing Plex library actors with TMDb movie credits to find missing movies.
 
@@ -50,3 +54,7 @@ Open `http://127.0.0.1:8787`.
 - See `SECURITY.md` for vulnerability reporting.
 - Dependency vulnerability checks run in GitHub Actions (`.github/workflows/security.yml`).
 - Static code scanning runs via CodeQL (`.github/workflows/codeql.yml`).
+
+## Contributing
+- See `CONTRIBUTING.md`.
+
