@@ -54,6 +54,7 @@ const state = {
   actorsVisibleCount: ACTORS_BATCH_SIZE,
   actorsImageObserver: null,
   imageCacheKey: localStorage.getItem('imageCacheKey') || '1',
+  createCollectionBusy: false,
 };
 let plexAuthPopup = null;
 
@@ -931,6 +932,38 @@ function closeScanModal() {
   if (modal) modal.remove();
 }
 
+function showCreateCollectionModal(message) {
+  const modal = document.createElement('div');
+  modal.className = 'scan-modal';
+  modal.id = 'create-collection-modal';
+  modal.innerHTML = `
+    <div class="scan-modal-card card">
+      <div class="scan-icon-wrap" id="create-collection-icon-wrap">
+        <div class="scan-spinner"></div>
+      </div>
+      <div class="scan-modal-msg" id="create-collection-modal-msg">${message}</div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+function showCreateCollectionSuccessModal(updatedCount) {
+  const iconWrap = document.getElementById('create-collection-icon-wrap');
+  const msg = document.getElementById('create-collection-modal-msg');
+  if (!iconWrap) return;
+  iconWrap.innerHTML = '<div class="scan-check">✓</div>';
+  if (msg) {
+    msg.textContent = updatedCount > 0
+      ? `Collection updated (${updatedCount})`
+      : 'Collection already up to date';
+  }
+}
+
+function closeCreateCollectionModal() {
+  const modal = document.getElementById('create-collection-modal');
+  if (modal) modal.remove();
+}
+
 async function runScan() {
   const status = document.getElementById('scan-status');
   const scanText = 'Scanning...';
@@ -1680,6 +1713,8 @@ async function renderActorDetail(actorId) {
 
   const data = await api(`/api/actors/${actorId}/movies?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}`);
   const actorName = data.actor.name;
+  const inPlexCount = data.items.filter((item) => item.in_plex).length;
+  const showCreateCollection = inPlexOnly && inPlexCount > 0;
   if (state.moviesSearchQuery) {
     state.moviesSearchOpen = true;
   }
@@ -1713,6 +1748,7 @@ async function renderActorDetail(actorId) {
       </div>
     </div>
     <section class="grid" id="movies-grid"></section>
+    ${showCreateCollection ? '<button id="create-collection-btn" class="collection-pill-btn">Create Collection</button>' : ''}
   `;
 
   document.getElementById('actor-detail-back').addEventListener('click', () => {
@@ -1769,6 +1805,38 @@ async function renderActorDetail(actorId) {
     params.set('sortDir', nextDir);
     pushActorDetailQuery(params);
   });
+
+  const createCollectionBtn = document.getElementById('create-collection-btn');
+  if (createCollectionBtn) {
+    createCollectionBtn.addEventListener('click', async () => {
+      if (state.createCollectionBusy) return;
+      state.createCollectionBusy = true;
+      createCollectionBtn.disabled = true;
+      showCreateCollectionModal('Creating collection...');
+      try {
+        const result = await api('/api/collections/create-from-actor', {
+          method: 'POST',
+          body: JSON.stringify({ actor_id: actorId, collection_name: actorName }),
+        });
+        const updated = Number(result.updated || 0);
+        const unchanged = Number(result.unchanged || 0);
+        const sectionCount = Array.isArray(result.sections) ? result.sections.length : 0;
+        showCreateCollectionSuccessModal(updated);
+        if (sectionCount > 0) {
+          createCollectionBtn.title = `${sectionCount} section(s) updated`;
+        } else if (unchanged > 0) {
+          createCollectionBtn.title = 'No changes needed';
+        }
+        window.setTimeout(closeCreateCollectionModal, 700);
+      } catch (error) {
+        closeCreateCollectionModal();
+        window.alert(error.message);
+      } finally {
+        state.createCollectionBusy = false;
+        createCollectionBtn.disabled = false;
+      }
+    });
+  }
 
   const grid = document.getElementById('movies-grid');
   if (!data.items.length) {

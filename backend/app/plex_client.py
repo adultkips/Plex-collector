@@ -269,6 +269,32 @@ def _server_get(uri: str, token: str, path: str, params: dict[str, Any] | None =
         return ET.fromstring(response.text)
 
 
+def _server_put(uri: str, token: str, path: str, params: dict[str, Any] | None = None) -> None:
+    target = f"{uri}{path}"
+    headers = _plex_headers(token)
+    headers['Accept'] = 'application/xml'
+    try:
+        response = requests.put(
+            target,
+            headers=headers,
+            params=params,
+            timeout=(6, 90),
+        )
+        response.raise_for_status()
+    except RequestsConnectionError:
+        fallback_base = _fallback_uri_from_plex_direct(uri)
+        if not fallback_base:
+            raise
+        fallback_target = f"{fallback_base}{path}"
+        response = requests.put(
+            fallback_target,
+            headers=headers,
+            params=params,
+            timeout=(6, 90),
+        )
+        response.raise_for_status()
+
+
 def fetch_movie_library_snapshot(
     server_uri: str,
     server_token: str,
@@ -326,6 +352,7 @@ def fetch_movie_library_snapshot(
             movies.append(
                 {
                     'plex_rating_key': rating_key,
+                    'library_section_id': section_key,
                     'title': title,
                     'original_title': original_title,
                     'year': year,
@@ -399,6 +426,68 @@ def fetch_movie_library_snapshot(
 
     actors.sort(key=lambda x: (-x['appearances'], x['name']))
     return actors, movies
+
+
+def append_collection_to_movies(
+    server_uri: str,
+    server_token: str,
+    section_id: str,
+    rating_keys: list[str],
+    collection_name: str,
+) -> dict[str, Any]:
+    collection_name = collection_name.strip()
+    if not collection_name:
+        return {'updated': 0, 'unchanged': 0}
+    unique_rating_keys = [rk for rk in dict.fromkeys(rating_keys) if rk]
+    if not unique_rating_keys:
+        return {'updated': 0, 'unchanged': 0}
+
+    existing_collections: dict[str, list[str]] = {}
+    chunk_size = 40
+    for idx in range(0, len(unique_rating_keys), chunk_size):
+        batch = unique_rating_keys[idx : idx + chunk_size]
+        batch_root = _server_get(
+            server_uri,
+            server_token,
+            f"/library/metadata/{','.join(batch)}",
+        )
+        for video in batch_root.findall('Video'):
+            rating_key = video.attrib.get('ratingKey')
+            if not rating_key:
+                continue
+            names: list[str] = []
+            for node in video.findall('Collection'):
+                name = node.attrib.get('tag')
+                if not name:
+                    continue
+                if name not in names:
+                    names.append(name)
+            existing_collections[rating_key] = names
+
+    updated = 0
+    unchanged = 0
+    for rating_key in unique_rating_keys:
+        existing = existing_collections.get(rating_key, [])
+        if collection_name in existing:
+            unchanged += 1
+            continue
+        tags = [*existing, collection_name]
+        params: dict[str, Any] = {
+            'type': 1,
+            'id': rating_key,
+            'includeExternalMedia': 1,
+        }
+        for index, tag in enumerate(tags):
+            params[f'collection[{index}].tag.tag'] = tag
+        _server_put(
+            server_uri,
+            server_token,
+            f'/library/sections/{section_id}/all',
+            params=params,
+        )
+        updated += 1
+
+    return {'updated': updated, 'unchanged': unchanged}
 
 
 def fetch_show_library_snapshot(

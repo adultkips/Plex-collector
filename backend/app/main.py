@@ -16,6 +16,7 @@ from requests import ConnectionError as RequestsConnectionError, RequestExceptio
 from .config import APP_NAME, APP_VERSION, HOST, PLEX_CLIENT_ID, STATIC_DIR, TMDB_API_KEY
 from .db import clear_settings, get_conn, get_setting, init_db, set_setting
 from .plex_client import (
+    append_collection_to_movies,
     candidate_server_uris,
     check_pin,
     choose_preferred_server,
@@ -83,6 +84,11 @@ class DownloadPrefixPayload(BaseModel):
     episode_end: str
 
 
+class CreateCollectionPayload(BaseModel):
+    actor_id: str
+    collection_name: str | None = None
+
+
 DEFAULT_DOWNLOAD_PREFIX = {
     'actor_start': '',
     'actor_mode': 'encoded_space',
@@ -141,6 +147,7 @@ def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str,
             '''
             INSERT INTO plex_movies(
                 plex_rating_key,
+                library_section_id,
                 title,
                 original_title,
                 year,
@@ -153,6 +160,7 @@ def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str,
             )
             VALUES(
                 :plex_rating_key,
+                :library_section_id,
                 :title,
                 :original_title,
                 :year,
@@ -167,6 +175,111 @@ def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str,
             movies,
         )
         conn.commit()
+
+
+def _build_actor_movies_payload(
+    actor_id: str,
+    missing_only: bool,
+    in_plex_only: bool,
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        actor = conn.execute(
+            'SELECT actor_id, name, tmdb_person_id FROM actors WHERE actor_id = ?',
+            (actor_id,),
+        ).fetchone()
+        if not actor:
+            raise HTTPException(status_code=404, detail='Actor not found')
+
+        actor_data = dict(actor)
+        if not actor_data['tmdb_person_id']:
+            person = search_person(actor_data['name'])
+            if not person:
+                return {'actor': actor_data, 'items': []}
+            actor_data['tmdb_person_id'] = person['id']
+            conn.execute(
+                'UPDATE actors SET tmdb_person_id = ?, image_url = COALESCE(image_url, ?), updated_at = ? WHERE actor_id = ?',
+                (person['id'], person['image_url'], datetime.now(UTC).isoformat(), actor_id),
+            )
+            conn.commit()
+
+        plex_rows = conn.execute(
+            '''
+            SELECT
+                plex_rating_key,
+                library_section_id,
+                title,
+                original_title,
+                year,
+                tmdb_id,
+                imdb_id,
+                normalized_title,
+                normalized_original_title,
+                plex_web_url
+            FROM plex_movies
+            '''
+        ).fetchall()
+
+    plex_by_key = {(r['normalized_title'], r['year']): dict(r) for r in plex_rows}
+    plex_by_tmdb_id = {r['tmdb_id']: dict(r) for r in plex_rows if r['tmdb_id'] is not None}
+    plex_title_buckets: dict[str, list[dict[str, Any]]] = {}
+    plex_original_title_buckets: dict[str, list[dict[str, Any]]] = {}
+    for row in plex_rows:
+        plex_title_buckets.setdefault(row['normalized_title'], []).append(dict(row))
+        if row['normalized_original_title']:
+            plex_original_title_buckets.setdefault(row['normalized_original_title'], []).append(dict(row))
+
+    try:
+        credits = get_person_movie_credits(actor_data['tmdb_person_id'])
+    except TMDbNotConfiguredError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    results = []
+    for movie in credits:
+        normalized = normalize_title(movie['title'])
+        matched = plex_by_tmdb_id.get(movie['tmdb_id']) if movie.get('tmdb_id') is not None else None
+        if not matched:
+            matched = plex_by_key.get((normalized, movie['year']))
+        if not matched:
+            candidates = plex_title_buckets.get(normalized, [])
+            if candidates and movie['year'] is not None:
+                close = [c for c in candidates if c['year'] and abs(c['year'] - movie['year']) <= 1]
+                if close:
+                    matched = close[0]
+            elif candidates:
+                matched = candidates[0]
+
+        if not matched:
+            original_candidates = plex_original_title_buckets.get(normalized, [])
+            if original_candidates and movie['year'] is not None:
+                close_original = [
+                    c for c in original_candidates if c['year'] and abs(c['year'] - movie['year']) <= 1
+                ]
+                if close_original:
+                    matched = close_original[0]
+            elif original_candidates:
+                matched = original_candidates[0]
+
+        item = {
+            **movie,
+            'in_plex': bool(matched),
+            'plex_rating_key': matched['plex_rating_key'] if matched else None,
+            'library_section_id': matched['library_section_id'] if matched else None,
+            'plex_web_url': matched['plex_web_url'] if matched else None,
+        }
+        include_item = True
+        if missing_only and item['in_plex']:
+            include_item = False
+        if in_plex_only and not item['in_plex']:
+            include_item = False
+        if include_item:
+            results.append(item)
+
+    return {
+        'actor': actor_data,
+        'items': results,
+        'missing_only': missing_only,
+        'in_plex_only': in_plex_only,
+    }
 
 
 def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[str, Any]]) -> None:
@@ -659,104 +772,99 @@ def actor_movies(
     missing_only: bool = Query(False),
     in_plex_only: bool = Query(False),
 ) -> dict[str, Any]:
-    with get_conn() as conn:
-        actor = conn.execute(
-            'SELECT actor_id, name, tmdb_person_id FROM actors WHERE actor_id = ?',
-            (actor_id,),
-        ).fetchone()
-        if not actor:
-            raise HTTPException(status_code=404, detail='Actor not found')
+    return _build_actor_movies_payload(actor_id, missing_only, in_plex_only)
 
-        actor_data = dict(actor)
-        if not actor_data['tmdb_person_id']:
-            person = search_person(actor_data['name'])
-            if not person:
-                return {'actor': actor_data, 'items': []}
-            actor_data['tmdb_person_id'] = person['id']
-            conn.execute(
-                'UPDATE actors SET tmdb_person_id = ?, image_url = COALESCE(image_url, ?), updated_at = ? WHERE actor_id = ?',
-                (person['id'], person['image_url'], datetime.now(UTC).isoformat(), actor_id),
-            )
-            conn.commit()
 
-        plex_rows = conn.execute(
-            '''
-            SELECT
-                plex_rating_key,
-                title,
-                original_title,
-                year,
-                tmdb_id,
-                imdb_id,
-                normalized_title,
-                normalized_original_title,
-                plex_web_url
-            FROM plex_movies
-            '''
-        ).fetchall()
+@app.post('/api/collections/create-from-actor')
+def create_collection_from_actor(payload: CreateCollectionPayload) -> dict[str, Any]:
+    _, server = ensure_auth()
+    actor_payload = _build_actor_movies_payload(payload.actor_id, False, True)
+    actor_name = actor_payload['actor']['name']
+    collection_name = (payload.collection_name or actor_name).strip()
+    if not collection_name:
+        raise HTTPException(status_code=400, detail='Collection name cannot be empty')
 
-    plex_by_key = {(r['normalized_title'], r['year']): dict(r) for r in plex_rows}
-    plex_by_tmdb_id = {r['tmdb_id']: dict(r) for r in plex_rows if r['tmdb_id'] is not None}
-    plex_title_buckets: dict[str, list[dict[str, Any]]] = {}
-    plex_original_title_buckets: dict[str, list[dict[str, Any]]] = {}
-    for row in plex_rows:
-        plex_title_buckets.setdefault(row['normalized_title'], []).append(dict(row))
-        if row['normalized_original_title']:
-            plex_original_title_buckets.setdefault(row['normalized_original_title'], []).append(dict(row))
-
-    try:
-        credits = get_person_movie_credits(actor_data['tmdb_person_id'])
-    except TMDbNotConfiguredError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    results = []
-    for movie in credits:
-        normalized = normalize_title(movie['title'])
-        matched = plex_by_tmdb_id.get(movie['tmdb_id']) if movie.get('tmdb_id') is not None else None
-        if not matched:
-            matched = plex_by_key.get((normalized, movie['year']))
-        if not matched:
-            candidates = plex_title_buckets.get(normalized, [])
-            if candidates and movie['year'] is not None:
-                close = [c for c in candidates if c['year'] and abs(c['year'] - movie['year']) <= 1]
-                if close:
-                    matched = close[0]
-            elif candidates:
-                matched = candidates[0]
-
-        # Fallback only when title+year did not match:
-        # try Plex original title to handle localized Plex titles.
-        if not matched:
-            original_candidates = plex_original_title_buckets.get(normalized, [])
-            if original_candidates and movie['year'] is not None:
-                close_original = [
-                    c for c in original_candidates if c['year'] and abs(c['year'] - movie['year']) <= 1
-                ]
-                if close_original:
-                    matched = close_original[0]
-            elif original_candidates:
-                matched = original_candidates[0]
-
-        item = {
-            **movie,
-            'in_plex': bool(matched),
-            'plex_rating_key': matched['plex_rating_key'] if matched else None,
-            'plex_web_url': matched['plex_web_url'] if matched else None,
+    in_plex_items = [
+        item for item in actor_payload['items']
+        if item.get('in_plex') and item.get('plex_rating_key') and item.get('library_section_id')
+    ]
+    if not in_plex_items:
+        return {
+            'ok': True,
+            'collection_name': collection_name,
+            'requested': 0,
+            'updated': 0,
+            'unchanged': 0,
+            'sections': [],
+            'detail': 'No Plex movies found for this actor.',
         }
-        include_item = True
-        if missing_only and item['in_plex']:
-            include_item = False
-        if in_plex_only and not item['in_plex']:
-            include_item = False
 
-        if include_item:
-            results.append(item)
+    keys_by_section: dict[str, list[str]] = {}
+    for item in in_plex_items:
+        section_id = str(item['library_section_id'])
+        keys_by_section.setdefault(section_id, []).append(str(item['plex_rating_key']))
 
+    uris_to_try = candidate_server_uris(server)
+    sections_result: list[dict[str, Any]] = []
+    total_updated = 0
+    total_unchanged = 0
+    for section_id, keys in keys_by_section.items():
+        section_error: Exception | None = None
+        applied: dict[str, Any] | None = None
+        for uri in uris_to_try:
+            try:
+                applied = append_collection_to_movies(
+                    uri,
+                    server['token'],
+                    section_id,
+                    keys,
+                    collection_name,
+                )
+                if server.get('uri') != uri:
+                    server['uri'] = uri
+                    set_setting('server', server)
+                break
+            except (RequestsConnectionError, RequestException, ParseError) as exc:
+                section_error = exc
+                continue
+        if applied is None:
+            sections_result.append(
+                {
+                    'section_id': section_id,
+                    'requested': len(set(keys)),
+                    'updated': 0,
+                    'unchanged': 0,
+                    'error': str(section_error) if section_error else 'Unknown Plex error',
+                }
+            )
+            continue
+        total_updated += int(applied.get('updated', 0))
+        total_unchanged += int(applied.get('unchanged', 0))
+        sections_result.append(
+            {
+                'section_id': section_id,
+                'requested': len(set(keys)),
+                'updated': int(applied.get('updated', 0)),
+                'unchanged': int(applied.get('unchanged', 0)),
+                'error': None,
+            }
+        )
+
+    errors = [section for section in sections_result if section.get('error')]
+    status = 'partial' if errors and total_updated > 0 else ('failed' if errors else 'success')
+    if status == 'failed':
+        raise HTTPException(
+            status_code=502,
+            detail='Could not update collection on Plex. Check server connection and metadata edit permissions.',
+        )
     return {
-        'actor': actor_data,
-        'items': results,
-        'missing_only': missing_only,
-        'in_plex_only': in_plex_only,
+        'ok': True,
+        'status': status,
+        'collection_name': collection_name,
+        'requested': len(in_plex_items),
+        'updated': total_updated,
+        'unchanged': total_unchanged,
+        'sections': sections_result,
     }
 
 

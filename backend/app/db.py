@@ -33,6 +33,7 @@ def init_db() -> None:
             '''
             CREATE TABLE IF NOT EXISTS plex_movies (
                 plex_rating_key TEXT PRIMARY KEY,
+                library_section_id TEXT,
                 title TEXT NOT NULL,
                 original_title TEXT,
                 year INTEGER,
@@ -83,6 +84,8 @@ def init_db() -> None:
             conn.execute('ALTER TABLE plex_movies ADD COLUMN tmdb_id INTEGER')
         if 'imdb_id' not in columns:
             conn.execute('ALTER TABLE plex_movies ADD COLUMN imdb_id TEXT')
+        if 'library_section_id' not in columns:
+            conn.execute('ALTER TABLE plex_movies ADD COLUMN library_section_id TEXT')
         show_columns = {row[1] for row in conn.execute("PRAGMA table_info('plex_shows')").fetchall()}
         if 'tmdb_show_id' not in show_columns:
             conn.execute('ALTER TABLE plex_shows ADD COLUMN tmdb_show_id INTEGER')
