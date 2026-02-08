@@ -14,6 +14,13 @@ Localhost-only tool for comparing Plex library actors with TMDb movie credits to
 - Download prefix settings for `Actors`, `Movies`, `Shows`, `Seasons`, and `Episodes`
 - Clickable `In Plex` and `Download` badges on cards
 
+## Screenshots
+![Profile](screenshots/profile.png)
+![Seasons](screenshots/seasons.png)
+![Movies](screenshots/movies.png)
+![Shows](screenshots/shows.png)
+![Seasons](screenshots/seasons.png)
+
 ## Requirements
 - Python 3.11+
 - Plex account with access to a Plex server
