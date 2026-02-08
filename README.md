@@ -5,11 +5,14 @@ Localhost-only tool for comparing Plex library actors with TMDb movie credits to
 ## Features
 - First-run onboarding with `Login with Plex`
 - Profile page with Plex account/server details
-- Floating icon-only bottom navigation (`Profile`, `Actors`)
+- Floating icon-only bottom navigation (`Profile`, `Actors`, `Shows`)
+- `Scan Actors` and `Scan Shows` with combined scan log
 - Actors grid from Plex movie library
-- Actor detail page with TMDb movie credits
-- Clickable Plex badge for movies already found in Plex
-- Toggle for showing only movies missing in Plex
+- Actor detail page with TMDb movie credits (`Missing` / `In Plex` filters)
+- Shows grid from Plex TV library
+- Show -> Season -> Episode flow with `Missing` / `In Plex` filters
+- Download prefix settings for `Actors`, `Movies`, `Shows`, `Seasons`, and `Episodes`
+- Clickable `In Plex` and `Download` badges on cards
 
 ## Requirements
 - Python 3.11+
