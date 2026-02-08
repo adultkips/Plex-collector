@@ -49,3 +49,4 @@ Open `http://127.0.0.1:8787`.
 ## Security
 - See `SECURITY.md` for vulnerability reporting.
 - Dependency vulnerability checks run in GitHub Actions (`.github/workflows/security.yml`).
+- Static code scanning runs via CodeQL (`.github/workflows/codeql.yml`).
