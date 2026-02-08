@@ -4,6 +4,16 @@ const navProfile = document.getElementById('nav-profile');
 const navActors = document.getElementById('nav-actors');
 const ACTOR_PLACEHOLDER = 'https://placehold.co/500x750?text=Actor';
 const MOVIE_PLACEHOLDER = 'https://placehold.co/500x750?text=Movie';
+const ACTORS_BATCH_SIZE = 80;
+const ACTOR_INITIAL_FILTERS = ['0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Æ', 'Ø', 'Å', '#'];
+const DEFAULT_DOWNLOAD_PREFIX = {
+  actor_start: '',
+  actor_mode: 'encoded_space',
+  actor_end: '',
+  movie_start: '',
+  movie_mode: 'encoded_space',
+  movie_end: '',
+};
 
 const state = {
   session: null,
@@ -18,6 +28,9 @@ const state = {
   moviesSearchQuery: '',
   actorsSortBy: localStorage.getItem('actorsSortBy') || 'name',
   actorsSortDir: localStorage.getItem('actorsSortDir') || 'asc',
+  actorsInitialFilter: localStorage.getItem('actorsInitialFilter') || 'A',
+  actorsVisibleCount: ACTORS_BATCH_SIZE,
+  actorsImageObserver: null,
 };
 let plexAuthPopup = null;
 
@@ -54,6 +67,73 @@ function sanitizeDownloadQuery(title) {
     .replace(/[^a-zA-Z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function getDownloadPrefixSettings() {
+  const fromProfile = state.profile?.download_prefix || {};
+  return {
+    ...DEFAULT_DOWNLOAD_PREFIX,
+    ...fromProfile,
+  };
+}
+
+function buildDownloadKeyword(rawText, mode) {
+  const clean = sanitizeDownloadQuery(rawText);
+  if (!clean) return '';
+  const words = clean.split(' ').filter(Boolean);
+  return mode === 'hyphen' ? words.join('-') : words.join('%20');
+}
+
+function buildDownloadLink(type, rawText) {
+  const settings = getDownloadPrefixSettings();
+  const isActor = type === 'actor';
+  const start = isActor ? settings.actor_start : settings.movie_start;
+  const mode = isActor ? settings.actor_mode : settings.movie_mode;
+  const end = isActor ? settings.actor_end : settings.movie_end;
+  if (!start && !end) return '';
+  const keyword = buildDownloadKeyword(rawText, mode);
+  if (!keyword) return '';
+  return `${start}${keyword}${end}`;
+}
+
+function buildDownloadExampleText(type, settings) {
+  const isActor = type === 'actor';
+  const start = (isActor ? settings.actor_start : settings.movie_start) || '';
+  const mode = isActor ? settings.actor_mode : settings.movie_mode;
+  const end = (isActor ? settings.actor_end : settings.movie_end) || '';
+  if (!start && !end) {
+    return '';
+  }
+  const keyword = buildDownloadKeyword(isActor ? 'bruce willis' : 'a day to die', mode);
+  return `E.g.: ${start}${keyword}${end}`;
+}
+
+function getActorInitialBucket(name) {
+  const firstChar = (name || '').trim().charAt(0).toUpperCase();
+  if (!firstChar) return '#';
+  if (/[0-9]/.test(firstChar)) return '0-9';
+  if (/[A-Z]/.test(firstChar)) return firstChar;
+  if (['Æ', 'Ø', 'Å'].includes(firstChar)) return firstChar;
+  return '#';
+}
+
+function normalizeActorNameForSort(name) {
+  return (name || '')
+    .trim()
+    .toUpperCase()
+    .replaceAll('Æ', 'AE')
+    .replaceAll('Ø', 'OE')
+    .replaceAll('Å', 'AA')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function compareActorNames(a, b) {
+  const aName = normalizeActorNameForSort(a?.name);
+  const bName = normalizeActorNameForSort(b?.name);
+  if (aName < bName) return -1;
+  if (aName > bName) return 1;
+  return (a?.name || '').localeCompare(b?.name || '', 'en', { sensitivity: 'base' });
 }
 
 function routeTo(view, actorId = null) {
@@ -269,6 +349,11 @@ async function pollForAuth(pinId, statusEl) {
 async function renderProfile() {
   const data = await loadProfileData();
   state.profile = data;
+  const downloadPrefix = getDownloadPrefixSettings();
+  const actorExampleText = buildDownloadExampleText('actor', downloadPrefix);
+  const movieExampleText = buildDownloadExampleText('movie', downloadPrefix);
+  const actorPrefixConfigured = Boolean((downloadPrefix.actor_start || '').trim() || (downloadPrefix.actor_end || '').trim());
+  const moviePrefixConfigured = Boolean((downloadPrefix.movie_start || '').trim() || (downloadPrefix.movie_end || '').trim());
 
   app.innerHTML = `
     <section class="profile">
@@ -303,6 +388,36 @@ async function renderProfile() {
         </div>
       </div>
 
+      <div class="card download-prefix-card">
+        <h3>Download Prefix</h3>
+        <div class="row settings-row">
+          <span class="meta no-margin prefix-label settings-label-strong">Actors prefix:</span>
+          <input id="actor-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.actor_start}" />
+          <select id="actor-prefix-format" class="secondary-btn prefix-format-select" aria-label="Actor keyword format">
+            <option value="encoded_space" ${downloadPrefix.actor_mode === 'encoded_space' ? 'selected' : ''}>Bruce%20Willis</option>
+            <option value="hyphen" ${downloadPrefix.actor_mode === 'hyphen' ? 'selected' : ''}>Bruce-Willis</option>
+          </select>
+          <input id="actor-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.actor_end}" />
+          <button id="actor-prefix-save-btn" class="secondary-btn">Save</button>
+          <span id="actor-prefix-check" class="meta no-margin status-check">${actorPrefixConfigured ? '✓' : ''}</span>
+          <span id="actor-prefix-status" class="meta no-margin"></span>
+        </div>
+        <div id="actor-prefix-example" class="meta no-margin prefix-example ${actorExampleText ? '' : 'hidden'}">${actorExampleText}</div>
+        <div class="row settings-row">
+          <span class="meta no-margin prefix-label settings-label-strong">Film prefix:</span>
+          <input id="movie-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.movie_start}" />
+          <select id="movie-prefix-format" class="secondary-btn prefix-format-select" aria-label="Movie keyword format">
+            <option value="encoded_space" ${downloadPrefix.movie_mode === 'encoded_space' ? 'selected' : ''}>A%20Day%20to%20Die</option>
+            <option value="hyphen" ${downloadPrefix.movie_mode === 'hyphen' ? 'selected' : ''}>A-Day-to-Die</option>
+          </select>
+          <input id="movie-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.movie_end}" />
+          <button id="movie-prefix-save-btn" class="secondary-btn">Save</button>
+          <span id="movie-prefix-check" class="meta no-margin status-check">${moviePrefixConfigured ? '✓' : ''}</span>
+          <span id="movie-prefix-status" class="meta no-margin"></span>
+        </div>
+        <div id="movie-prefix-example" class="meta no-margin prefix-example ${movieExampleText ? '' : 'hidden'}">${movieExampleText}</div>
+      </div>
+
       <div class="card library-sync-card">
         <h3>Library Sync</h3>
         <p class="subtitle">Scan Plex libraries.</p>
@@ -332,6 +447,8 @@ async function renderProfile() {
   if (tmdbInput && data.tmdb_api_key) {
     tmdbInput.value = data.tmdb_api_key;
   }
+  document.getElementById('actor-prefix-save-btn').addEventListener('click', saveActorPrefix);
+  document.getElementById('movie-prefix-save-btn').addEventListener('click', saveMoviePrefix);
   renderScanLogs(data.scan_logs || []);
 }
 
@@ -391,6 +508,72 @@ async function saveTmdbKey() {
     status.textContent = 'Saved';
     state.profileLoaded = false;
     await renderProfile();
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function saveActorPrefix() {
+  const status = document.getElementById('actor-prefix-status');
+  const check = document.getElementById('actor-prefix-check');
+  const example = document.getElementById('actor-prefix-example');
+  status.textContent = 'Saving...';
+  const existing = getDownloadPrefixSettings();
+  const payload = {
+    actor_start: document.getElementById('actor-prefix-start').value.trim(),
+    actor_mode: document.getElementById('actor-prefix-format').value,
+    actor_end: document.getElementById('actor-prefix-end').value.trim(),
+    movie_start: existing.movie_start,
+    movie_mode: existing.movie_mode,
+    movie_end: existing.movie_end,
+  };
+  try {
+    const result = await api('/api/download-prefix', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    state.profile = { ...state.profile, download_prefix: result.download_prefix };
+    const configured = Boolean((result.download_prefix.actor_start || '').trim() || (result.download_prefix.actor_end || '').trim());
+    if (check) check.textContent = configured ? '✓' : '';
+    if (example) {
+      const text = buildDownloadExampleText('actor', result.download_prefix);
+      example.textContent = text;
+      example.classList.toggle('hidden', !text);
+    }
+    status.textContent = 'Saved';
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function saveMoviePrefix() {
+  const status = document.getElementById('movie-prefix-status');
+  const check = document.getElementById('movie-prefix-check');
+  const example = document.getElementById('movie-prefix-example');
+  status.textContent = 'Saving...';
+  const existing = getDownloadPrefixSettings();
+  const payload = {
+    actor_start: existing.actor_start,
+    actor_mode: existing.actor_mode,
+    actor_end: existing.actor_end,
+    movie_start: document.getElementById('movie-prefix-start').value.trim(),
+    movie_mode: document.getElementById('movie-prefix-format').value,
+    movie_end: document.getElementById('movie-prefix-end').value.trim(),
+  };
+  try {
+    const result = await api('/api/download-prefix', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    state.profile = { ...state.profile, download_prefix: result.download_prefix };
+    const configured = Boolean((result.download_prefix.movie_start || '').trim() || (result.download_prefix.movie_end || '').trim());
+    if (check) check.textContent = configured ? '✓' : '';
+    if (example) {
+      const text = buildDownloadExampleText('movie', result.download_prefix);
+      example.textContent = text;
+      example.classList.toggle('hidden', !text);
+    }
+    status.textContent = 'Saved';
   } catch (error) {
     status.textContent = error.message;
   }
@@ -511,6 +694,7 @@ async function renderActors() {
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 1-4.24 10.24A6 6 0 0 1 10 4m0-2a8 8 0 1 0 5.29 14l4.85 4.85 1.41-1.41-4.85-4.85A8 8 0 0 0 10 2Z"/></svg>
           </button>
           <input id="actors-search-input" class="search-input" type="text" placeholder="Search actors" value="${state.actorsSearchQuery}" />
+          <button id="actors-search-clear" class="search-clear-btn ${state.actorsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
         </div>
         <select id="actors-sort-by" class="secondary-btn" aria-label="Sort actors by">
           <option value="name" ${state.actorsSortBy === 'name' ? 'selected' : ''}>Name</option>
@@ -519,24 +703,47 @@ async function renderActors() {
         <button id="actors-sort-dir" class="toggle-btn" title="Toggle sort direction" aria-label="Toggle sort direction">${state.actorsSortDir === 'asc' ? '↑' : '↓'}</button>
       </div>
     </div>
+    <div class="alphabet-filter" id="actors-alphabet-filter">
+      ${(() => {
+        const initials = new Set(state.actors.map((actor) => getActorInitialBucket(actor.name)));
+        const dynamicFilters = ACTOR_INITIAL_FILTERS.filter((key) => {
+          if (['Æ', 'Ø', 'Å'].includes(key)) {
+            return initials.has(key);
+          }
+          return true;
+        });
+        if (!dynamicFilters.includes(state.actorsInitialFilter)) {
+          state.actorsInitialFilter = 'A';
+          localStorage.setItem('actorsInitialFilter', state.actorsInitialFilter);
+        }
+        return dynamicFilters
+          .map((key) => `<button class="alpha-btn ${state.actorsInitialFilter === key ? 'active' : ''}" data-filter="${key}">${key}</button>`)
+          .join('');
+      })()}
+    </div>
     <section class="grid" id="actors-grid"></section>
+    <div class="load-more-wrap" id="actors-load-more-wrap"></div>
   `;
 
   document.getElementById('actors-sort-by').addEventListener('change', (event) => {
     state.actorsSortBy = event.target.value;
     localStorage.setItem('actorsSortBy', state.actorsSortBy);
+    state.actorsVisibleCount = ACTORS_BATCH_SIZE;
     renderActors();
   });
   document.getElementById('actors-sort-dir').addEventListener('click', () => {
     state.actorsSortDir = state.actorsSortDir === 'asc' ? 'desc' : 'asc';
     localStorage.setItem('actorsSortDir', state.actorsSortDir);
+    state.actorsVisibleCount = ACTORS_BATCH_SIZE;
     renderActors();
   });
 
   const grid = document.getElementById('actors-grid');
+  const loadMoreWrap = document.getElementById('actors-load-more-wrap');
+  const alphabetFilterEl = document.getElementById('actors-alphabet-filter');
   const sortedActors = [...state.actors].sort((a, b) => {
     if (state.actorsSortBy === 'name') {
-      return a.name.localeCompare(b.name);
+      return compareActorNames(a, b);
     }
     return a.appearances - b.appearances;
   });
@@ -546,27 +753,65 @@ async function renderActors() {
 
   const renderActorsGrid = () => {
     const query = state.actorsSearchQuery.trim().toLowerCase();
+    const isSearching = query.length > 0;
+    const filteredByInitial = sortedActors.filter((actor) => getActorInitialBucket(actor.name) === state.actorsInitialFilter);
     const visible = query
       ? sortedActors.filter((actor) => actor.name.toLowerCase().includes(query))
-      : sortedActors;
+      : filteredByInitial;
+    const renderItems = visible.slice(0, state.actorsVisibleCount);
+
+    for (const button of alphabetFilterEl.querySelectorAll('.alpha-btn')) {
+      button.classList.remove('active');
+      button.disabled = isSearching;
+      if (!isSearching && button.dataset.filter === state.actorsInitialFilter) {
+        button.classList.add('active');
+      }
+    }
+
+    if (state.actorsImageObserver) {
+      state.actorsImageObserver.disconnect();
+      state.actorsImageObserver = null;
+    }
+    if ('IntersectionObserver' in window) {
+      state.actorsImageObserver = new IntersectionObserver((entries, observer) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const img = entry.target;
+          const lazySrc = img.dataset.src;
+          if (lazySrc && img.src !== lazySrc) {
+            img.src = lazySrc;
+          }
+          observer.unobserve(img);
+        }
+      }, { rootMargin: '180px 0px' });
+    }
 
     grid.innerHTML = '';
-    for (const actor of visible) {
-      const downloadName = sanitizeDownloadQuery(actor.name);
-      const downloadUrl = `https://login.superbits.org/search?search=${encodeURIComponent(downloadName)}&extended=true`;
+    for (const actor of renderItems) {
+      const downloadUrl = buildDownloadLink('actor', actor.name);
+      const actorDownloadBadge = downloadUrl
+        ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
+        : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
+      const actorImage = actor.image_url || ACTOR_PLACEHOLDER;
       const card = document.createElement('article');
       card.className = 'actor-card';
       card.innerHTML = `
         <div class="poster-wrap">
-          <img class="poster" src="${actor.image_url || ACTOR_PLACEHOLDER}" alt="${actor.name}" loading="lazy" />
-          <a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>
+          <img class="poster actor-poster-lazy" src="${ACTOR_PLACEHOLDER}" data-src="${actorImage}" alt="${actor.name}" loading="lazy" />
+          ${actorDownloadBadge}
         </div>
         <div class="caption">
           <div class="name">${actor.name}</div>
           <div class="count">${actor.appearances} from Plex</div>
         </div>
       `;
-      applyImageFallback(card.querySelector('.poster'), ACTOR_PLACEHOLDER);
+      const poster = card.querySelector('.poster');
+      applyImageFallback(poster, ACTOR_PLACEHOLDER);
+      if (state.actorsImageObserver) {
+        state.actorsImageObserver.observe(poster);
+      } else {
+        poster.src = actorImage;
+      }
       const downloadLink = card.querySelector('.badge-link');
       downloadLink.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -574,11 +819,37 @@ async function renderActors() {
       card.addEventListener('click', () => routeTo('actor-detail', actor.actor_id));
       grid.appendChild(card);
     }
+
+    const remaining = visible.length - renderItems.length;
+    if (remaining > 0) {
+      loadMoreWrap.innerHTML = `<button id="actors-load-more" class="secondary-btn">Load more (${remaining})</button>`;
+      document.getElementById('actors-load-more').addEventListener('click', () => {
+        state.actorsVisibleCount += ACTORS_BATCH_SIZE;
+        renderActorsGrid();
+      });
+    } else {
+      loadMoreWrap.innerHTML = '';
+    }
   };
+
+  document.getElementById('actors-alphabet-filter').addEventListener('click', (event) => {
+    const target = event.target.closest('.alpha-btn');
+    if (!target) return;
+    state.actorsInitialFilter = target.dataset.filter;
+    localStorage.setItem('actorsInitialFilter', state.actorsInitialFilter);
+    state.actorsVisibleCount = ACTORS_BATCH_SIZE;
+    renderActors();
+  });
 
   const actorsSearchControl = document.getElementById('actors-search-control');
   const actorsSearchToggle = document.getElementById('actors-search-toggle');
   const actorsSearchInput = document.getElementById('actors-search-input');
+  const actorsSearchClear = document.getElementById('actors-search-clear');
+
+  const updateActorsSearchClear = () => {
+    const hasValue = !!state.actorsSearchQuery.trim();
+    actorsSearchClear.classList.toggle('hidden', !state.actorsSearchOpen || !hasValue);
+  };
 
   actorsSearchToggle.addEventListener('click', () => {
     state.actorsSearchOpen = !state.actorsSearchOpen;
@@ -588,15 +859,29 @@ async function renderActors() {
     } else {
       state.actorsSearchQuery = '';
       actorsSearchInput.value = '';
+      state.actorsVisibleCount = ACTORS_BATCH_SIZE;
       renderActorsGrid();
     }
+    updateActorsSearchClear();
   });
 
   actorsSearchInput.addEventListener('input', (event) => {
     state.actorsSearchQuery = event.target.value;
+    state.actorsVisibleCount = ACTORS_BATCH_SIZE;
     renderActorsGrid();
+    updateActorsSearchClear();
   });
 
+  actorsSearchClear.addEventListener('click', () => {
+    state.actorsSearchQuery = '';
+    actorsSearchInput.value = '';
+    actorsSearchInput.focus();
+    state.actorsVisibleCount = ACTORS_BATCH_SIZE;
+    renderActorsGrid();
+    updateActorsSearchClear();
+  });
+
+  updateActorsSearchClear();
   renderActorsGrid();
 }
 
@@ -617,9 +902,14 @@ async function renderActorDetail(actorId) {
 
   app.innerHTML = `
     <div class="topbar">
-      <div class="topbar-title">
-        <h2>${actorName}</h2>
-        <div class="meta">${data.items.length} movies</div>
+      <div class="topbar-left">
+        <button id="actor-detail-back" class="back-icon-btn" title="Back to Actors" aria-label="Back to Actors">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg>
+        </button>
+        <div class="topbar-title">
+          <h2>${actorName}</h2>
+          <div class="meta">${data.items.length} movies</div>
+        </div>
       </div>
       <div class="row">
         <div id="movies-search-control" class="search-control ${state.moviesSearchOpen ? 'open' : ''}">
@@ -627,6 +917,7 @@ async function renderActorDetail(actorId) {
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 1-4.24 10.24A6 6 0 0 1 10 4m0-2a8 8 0 1 0 5.29 14l4.85 4.85 1.41-1.41-4.85-4.85A8 8 0 0 0 10 2Z"/></svg>
           </button>
           <input id="movies-search-input" class="search-input" type="text" placeholder="Search movies" value="${state.moviesSearchQuery}" />
+          <button id="movies-search-clear" class="search-clear-btn ${state.moviesSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
         </div>
         <select id="movies-sort-by" class="secondary-btn" aria-label="Sort movies by">
           <option value="title" ${sortBy === 'title' ? 'selected' : ''}>Title</option>
@@ -639,6 +930,10 @@ async function renderActorDetail(actorId) {
     </div>
     <section class="grid" id="movies-grid"></section>
   `;
+
+  document.getElementById('actor-detail-back').addEventListener('click', () => {
+    routeTo('actors');
+  });
 
   const pushActorDetailQuery = (params) => {
     const query = params.toString();
@@ -720,15 +1015,17 @@ async function renderActorDetail(actorId) {
       const card = document.createElement('article');
       card.className = 'movie-card';
       const tmdbUrl = movie.tmdb_id ? `https://www.themoviedb.org/movie/${movie.tmdb_id}` : null;
-      const downloadTitle = sanitizeDownloadQuery(movie.title);
-      const downloadUrl = `https://login.superbits.org/search?search=${encodeURIComponent(downloadTitle)}`;
+      const downloadUrl = buildDownloadLink('movie', movie.title);
+      const movieDownloadBadge = downloadUrl
+        ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
+        : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
       card.innerHTML = `
         <div class="poster-wrap">
           <img class="poster" src="${movie.poster_url || MOVIE_PLACEHOLDER}" alt="${movie.title}" loading="lazy" />
           ${
             movie.in_plex
               ? `<a class="badge-link badge-overlay" href="${movie.plex_web_url}" target="_blank" rel="noopener noreferrer">In Plex <span class="badge-icon badge-icon-check">✓</span></a>`
-              : `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
+              : movieDownloadBadge
           }
         </div>
         <div class="caption">
@@ -751,6 +1048,12 @@ async function renderActorDetail(actorId) {
   const moviesSearchControl = document.getElementById('movies-search-control');
   const moviesSearchToggle = document.getElementById('movies-search-toggle');
   const moviesSearchInput = document.getElementById('movies-search-input');
+  const moviesSearchClear = document.getElementById('movies-search-clear');
+
+  const updateMoviesSearchClear = () => {
+    const hasValue = !!state.moviesSearchQuery.trim();
+    moviesSearchClear.classList.toggle('hidden', !state.moviesSearchOpen || !hasValue);
+  };
 
   moviesSearchToggle.addEventListener('click', () => {
     state.moviesSearchOpen = !state.moviesSearchOpen;
@@ -762,13 +1065,24 @@ async function renderActorDetail(actorId) {
       moviesSearchInput.value = '';
       renderMoviesGrid();
     }
+    updateMoviesSearchClear();
   });
 
   moviesSearchInput.addEventListener('input', (event) => {
     state.moviesSearchQuery = event.target.value;
     renderMoviesGrid();
+    updateMoviesSearchClear();
   });
 
+  moviesSearchClear.addEventListener('click', () => {
+    state.moviesSearchQuery = '';
+    moviesSearchInput.value = '';
+    moviesSearchInput.focus();
+    renderMoviesGrid();
+    updateMoviesSearchClear();
+  });
+
+  updateMoviesSearchClear();
   renderMoviesGrid();
 }
 

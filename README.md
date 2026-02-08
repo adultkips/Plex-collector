@@ -16,35 +16,22 @@ Localhost-only tool for comparing Plex library actors with TMDb movie credits to
 - Plex account with access to a Plex server
 - TMDb API key
 
-## Setup
-1. Copy `.env.example` to `.env`.
-2. First-time install (creates `.venv` and installs dependencies):
+## Install
+Run first-time setup (creates `.venv` and installs dependencies):
 ```bat
 Install.bat
 ```
-3. Next starts (skip reinstall):
+`Install.bat` does not start the server.
+
+## Start Server
+Run after installation:
 ```bat
 start_server.bat
 ```
-4. Open `http://127.0.0.1:8787`.
+Open `http://127.0.0.1:8787`.
 
 ## Notes
 - Data is cached locally in `backend/data/plex_collector.db`.
 - Use `Scan Actors` on the Profile page after login.
 - This app prefers local Plex connections when available.
 - `Install.bat` auto-creates or recreates `.venv` if it belongs to another machine/user.
-
-## Publish To GitHub
-1. Initialize repository:
-```bash
-git init
-git add .
-git commit -m "Initial commit"
-```
-2. Create an empty GitHub repository.
-3. Add remote and push:
-```bash
-git branch -M main
-git remote add origin <your-repo-url>
-git push -u origin main
-```

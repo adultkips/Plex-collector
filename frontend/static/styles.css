@@ -104,6 +104,7 @@ select.secondary-btn {
 .search-control {
   display: flex;
   align-items: center;
+  position: relative;
 }
 
 .search-toggle-btn {
@@ -140,9 +141,34 @@ select.secondary-btn {
   width: 220px;
   margin-left: 12px;
   opacity: 1;
-  padding: 7px 12px;
+  padding: 7px 34px 7px 12px;
   border: 1px solid #334155;
   pointer-events: auto;
+}
+
+.search-clear-btn {
+  position: absolute;
+  right: 8px;
+  border: 0;
+  background: transparent;
+  color: #b8c2d3;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+
+.search-clear-btn:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.search-clear-btn.hidden {
+  display: none;
 }
 
 .profile {
@@ -176,16 +202,32 @@ select.secondary-btn {
   color: var(--muted);
   margin-top: 6px;
 }
+.topbar .meta { margin-top: 0; }
 .meta.no-margin { margin-top: 0; }
 .settings-label-strong { font-weight: 700; }
 .settings-label {
   display: inline-block;
   width: 82px;
 }
+.prefix-label {
+  display: inline-block;
+  width: 104px;
+  white-space: nowrap;
+}
 
 .settings-row { margin-top: 10px; }
 .server-select { width: 280px; }
 .tmdb-key-input { min-width: 280px; }
+.download-prefix-card { padding: 18px; }
+.prefix-input { min-width: 260px; }
+.prefix-format-select { width: 170px; }
+.prefix-example {
+  width: 100%;
+  margin-top: 6px;
+  color: #7f8a9e;
+  font-size: 0.82rem;
+  font-style: italic;
+}
 .library-sync-card { padding: 18px; }
 .library-sync-actions { margin-top: 12px; }
 .actors-empty { margin-top: 14px; }
@@ -259,6 +301,75 @@ select.secondary-btn {
   flex-wrap: wrap;
 }
 
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.back-icon-btn {
+  border: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  background: #2a3443;
+  color: #dbe4f3;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+
+.back-icon-btn svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.back-icon-btn:hover {
+  background: #344255;
+}
+
+.alphabet-filter {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2px;
+}
+
+.alpha-btn {
+  border: 0;
+  border-radius: 10px;
+  padding: 7px 10px;
+  min-width: 38px;
+  background: transparent;
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.alpha-btn.active {
+  background: var(--accent);
+  color: #1a1200;
+}
+
+.alpha-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+
+.load-more-wrap {
+  margin-top: 14px;
+  display: flex;
+  justify-content: center;
+}
+
 .badge-link {
   margin-top: 8px;
   display: inline-block;
@@ -307,6 +418,12 @@ select.secondary-btn {
 
 .badge-overlay:hover {
   transform: translateX(-50%) scale(1.07);
+}
+
+.badge-disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
 }
 
 .badge-overlay {
@@ -449,6 +566,7 @@ select.secondary-btn {
 }
 
 .icon-btn {
+  position: relative;
   border: 0;
   width: 52px;
   height: 52px;
@@ -457,6 +575,47 @@ select.secondary-btn {
   display: grid;
   place-items: center;
   cursor: pointer;
+}
+
+.icon-btn::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%) translateY(3px);
+  background: #0f1723;
+  color: #dbe4f3;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.icon-btn::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 5px);
+  transform: translateX(-50%) translateY(3px);
+  width: 8px;
+  height: 8px;
+  background: #0f1723;
+  border-left: 1px solid #334155;
+  border-top: 1px solid #334155;
+  rotate: 225deg;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.icon-btn:hover::after,
+.icon-btn:hover::before {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
 .icon-btn.active {
@@ -479,4 +638,11 @@ select.secondary-btn {
   #app { padding: 18px 12px 110px; }
   .onboarding .card { padding: 24px; }
   .grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (hover: none) {
+  .icon-btn::after,
+  .icon-btn::before {
+    display: none;
+  }
 }

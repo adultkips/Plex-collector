@@ -39,6 +39,42 @@ class ServerSelectPayload(BaseModel):
     client_identifier: str
 
 
+class DownloadPrefixPayload(BaseModel):
+    actor_start: str
+    actor_mode: str
+    actor_end: str
+    movie_start: str
+    movie_mode: str
+    movie_end: str
+
+
+DEFAULT_DOWNLOAD_PREFIX = {
+    'actor_start': '',
+    'actor_mode': 'encoded_space',
+    'actor_end': '',
+    'movie_start': '',
+    'movie_mode': 'encoded_space',
+    'movie_end': '',
+}
+VALID_DOWNLOAD_MODES = {'encoded_space', 'hyphen'}
+
+
+def get_download_prefix_settings() -> dict[str, str]:
+    raw = get_setting('download_prefix', {})
+    if not isinstance(raw, dict):
+        return dict(DEFAULT_DOWNLOAD_PREFIX)
+    merged = dict(DEFAULT_DOWNLOAD_PREFIX)
+    for key in merged:
+        value = raw.get(key)
+        if isinstance(value, str):
+            merged[key] = value
+    if merged['actor_mode'] not in VALID_DOWNLOAD_MODES:
+        merged['actor_mode'] = DEFAULT_DOWNLOAD_PREFIX['actor_mode']
+    if merged['movie_mode'] not in VALID_DOWNLOAD_MODES:
+        merged['movie_mode'] = DEFAULT_DOWNLOAD_PREFIX['movie_mode']
+    return merged
+
+
 def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str, Any]]) -> None:
     with get_conn() as conn:
         conn.execute('DELETE FROM actors')
@@ -216,6 +252,7 @@ def profile() -> dict[str, Any]:
         'tmdb_source': 'local' if local_tmdb_key else ('env' if TMDB_API_KEY else 'none'),
         'tmdb_has_local_override': bool(local_tmdb_key),
         'tmdb_api_key': active_tmdb_key if active_tmdb_key else '',
+        'download_prefix': get_download_prefix_settings(),
         'scan_logs': get_setting('scan_logs', []),
     }
 
@@ -259,6 +296,27 @@ def select_server(payload: ServerSelectPayload) -> dict[str, Any]:
     }
     set_setting('server', server_payload)
     return {'ok': True, 'server': {k: v for k, v in server_payload.items() if k != 'token'}}
+
+
+@app.post('/api/download-prefix')
+def set_download_prefix(payload: DownloadPrefixPayload) -> dict[str, Any]:
+    actor_mode = payload.actor_mode.strip()
+    movie_mode = payload.movie_mode.strip()
+    if actor_mode not in VALID_DOWNLOAD_MODES:
+        raise HTTPException(status_code=400, detail='Invalid actor keyword format')
+    if movie_mode not in VALID_DOWNLOAD_MODES:
+        raise HTTPException(status_code=400, detail='Invalid movie keyword format')
+
+    settings = {
+        'actor_start': payload.actor_start.strip(),
+        'actor_mode': actor_mode,
+        'actor_end': payload.actor_end.strip(),
+        'movie_start': payload.movie_start.strip(),
+        'movie_mode': movie_mode,
+        'movie_end': payload.movie_end.strip(),
+    }
+    set_setting('download_prefix', settings)
+    return {'ok': True, 'download_prefix': settings}
 
 
 @app.post('/api/scan/actors')
