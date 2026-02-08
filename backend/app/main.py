@@ -8,11 +8,12 @@ from xml.etree.ElementTree import ParseError
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
 import requests
 from requests import ConnectionError as RequestsConnectionError, RequestException
 
-from .config import APP_NAME, APP_VERSION, PLEX_CLIENT_ID, STATIC_DIR, TMDB_API_KEY
+from .config import APP_NAME, APP_VERSION, HOST, PLEX_CLIENT_ID, STATIC_DIR, TMDB_API_KEY
 from .db import clear_settings, get_conn, get_setting, init_db, set_setting
 from .plex_client import (
     candidate_server_uris,
@@ -37,6 +38,23 @@ from .tmdb_client import get_tmdb_api_key
 from .utils import normalize_title
 
 app = FastAPI(title=APP_NAME, version=APP_VERSION)
+trusted_hosts = {'127.0.0.1', 'localhost', '::1'}
+if HOST and HOST not in {'0.0.0.0', '::'}:
+    trusted_hosts.add(HOST)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=sorted(trusted_hosts))
+
+
+@app.middleware('http')
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'DENY')
+    response.headers.setdefault('Referrer-Policy', 'no-referrer')
+    response.headers.setdefault(
+        'Permissions-Policy',
+        'camera=(), microphone=(), geolocation=()',
+    )
+    return response
 
 
 class TMDbKeyPayload(BaseModel):

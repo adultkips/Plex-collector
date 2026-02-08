@@ -45,3 +45,7 @@ Open `http://127.0.0.1:8787`.
 - Use `Scan Actors` on the Profile page after login.
 - This app prefers local Plex connections when available.
 - `Install.bat` auto-creates or recreates `.venv` if it belongs to another machine/user.
+
+## Security
+- See `SECURITY.md` for vulnerability reporting.
+- Dependency vulnerability checks run in GitHub Actions (`.github/workflows/security.yml`).
