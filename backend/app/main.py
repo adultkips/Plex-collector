@@ -25,6 +25,7 @@ from .plex_client import (
     get_account_profile,
     get_resources,
     pick_server_uri,
+    resolve_movie_section_ids,
     start_pin,
 )
 from .tmdb_client import (
@@ -184,7 +185,7 @@ def _build_actor_movies_payload(
 ) -> dict[str, Any]:
     with get_conn() as conn:
         actor = conn.execute(
-            'SELECT actor_id, name, tmdb_person_id FROM actors WHERE actor_id = ?',
+            'SELECT actor_id, name, tmdb_person_id, image_url FROM actors WHERE actor_id = ?',
             (actor_id,),
         ).fetchone()
         if not actor:
@@ -786,7 +787,7 @@ def create_collection_from_actor(payload: CreateCollectionPayload) -> dict[str, 
 
     in_plex_items = [
         item for item in actor_payload['items']
-        if item.get('in_plex') and item.get('plex_rating_key') and item.get('library_section_id')
+        if item.get('in_plex') and item.get('plex_rating_key')
     ]
     if not in_plex_items:
         return {
@@ -799,12 +800,53 @@ def create_collection_from_actor(payload: CreateCollectionPayload) -> dict[str, 
             'detail': 'No Plex movies found for this actor.',
         }
 
+    in_plex_items_with_section = [item for item in in_plex_items if item.get('library_section_id')]
+    unresolved_keys = [
+        str(item['plex_rating_key']) for item in in_plex_items if not item.get('library_section_id')
+    ]
+
     keys_by_section: dict[str, list[str]] = {}
-    for item in in_plex_items:
+    for item in in_plex_items_with_section:
         section_id = str(item['library_section_id'])
         keys_by_section.setdefault(section_id, []).append(str(item['plex_rating_key']))
 
     uris_to_try = candidate_server_uris(server)
+    if unresolved_keys:
+        resolved_sections: dict[str, str] = {}
+        for uri in uris_to_try:
+            try:
+                resolved_sections = resolve_movie_section_ids(
+                    uri,
+                    server['token'],
+                    unresolved_keys,
+                )
+                if resolved_sections and server.get('uri') != uri:
+                    server['uri'] = uri
+                    set_setting('server', server)
+                break
+            except (RequestsConnectionError, RequestException, ParseError):
+                continue
+        for rating_key, section_id in resolved_sections.items():
+            keys_by_section.setdefault(str(section_id), []).append(str(rating_key))
+        if resolved_sections:
+            with get_conn() as conn:
+                conn.executemany(
+                    'UPDATE plex_movies SET library_section_id = ? WHERE plex_rating_key = ?',
+                    [(section_id, rating_key) for rating_key, section_id in resolved_sections.items()],
+                )
+                conn.commit()
+
+    if not keys_by_section:
+        return {
+            'ok': True,
+            'collection_name': collection_name,
+            'requested': len(in_plex_items),
+            'updated': 0,
+            'unchanged': 0,
+            'sections': [],
+            'detail': 'Could not resolve Plex library section for selected movies. Run Scan Actors again and retry.',
+        }
+
     sections_result: list[dict[str, Any]] = []
     total_updated = 0
     total_unchanged = 0

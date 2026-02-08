@@ -490,6 +490,33 @@ def append_collection_to_movies(
     return {'updated': updated, 'unchanged': unchanged}
 
 
+def resolve_movie_section_ids(
+    server_uri: str,
+    server_token: str,
+    rating_keys: list[str],
+) -> dict[str, str]:
+    unique_rating_keys = [rk for rk in dict.fromkeys(rating_keys) if rk]
+    if not unique_rating_keys:
+        return {}
+    resolved: dict[str, str] = {}
+    chunk_size = 40
+    for idx in range(0, len(unique_rating_keys), chunk_size):
+        batch = unique_rating_keys[idx : idx + chunk_size]
+        batch_root = _server_get(
+            server_uri,
+            server_token,
+            f"/library/metadata/{','.join(batch)}",
+        )
+        for video in batch_root.findall('Video'):
+            rating_key = video.attrib.get('ratingKey')
+            section_id = video.attrib.get('librarySectionID')
+            if rating_key and section_id:
+                resolved[str(rating_key)] = str(section_id)
+    return resolved
+
+
+
+
 def fetch_show_library_snapshot(
     server_uri: str,
     server_token: str,
