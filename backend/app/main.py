@@ -19,12 +19,20 @@ from .plex_client import (
     check_pin,
     choose_preferred_server,
     fetch_movie_library_snapshot,
+    fetch_show_library_snapshot,
     get_account_profile,
     get_resources,
     pick_server_uri,
     start_pin,
 )
-from .tmdb_client import TMDbNotConfiguredError, get_person_movie_credits, search_person
+from .tmdb_client import (
+    TMDbNotConfiguredError,
+    get_person_movie_credits,
+    get_tv_season_episodes,
+    get_tv_show_seasons,
+    search_person,
+    search_tv_show,
+)
 from .tmdb_client import get_tmdb_api_key
 from .utils import normalize_title
 
@@ -46,6 +54,15 @@ class DownloadPrefixPayload(BaseModel):
     movie_start: str
     movie_mode: str
     movie_end: str
+    show_start: str
+    show_mode: str
+    show_end: str
+    season_start: str
+    season_mode: str
+    season_end: str
+    episode_start: str
+    episode_mode: str
+    episode_end: str
 
 
 DEFAULT_DOWNLOAD_PREFIX = {
@@ -55,6 +72,15 @@ DEFAULT_DOWNLOAD_PREFIX = {
     'movie_start': '',
     'movie_mode': 'encoded_space',
     'movie_end': '',
+    'show_start': '',
+    'show_mode': 'encoded_space',
+    'show_end': '',
+    'season_start': '',
+    'season_mode': 'encoded_space',
+    'season_end': '',
+    'episode_start': '',
+    'episode_mode': 'encoded_space',
+    'episode_end': '',
 }
 VALID_DOWNLOAD_MODES = {'encoded_space', 'hyphen'}
 
@@ -72,6 +98,12 @@ def get_download_prefix_settings() -> dict[str, str]:
         merged['actor_mode'] = DEFAULT_DOWNLOAD_PREFIX['actor_mode']
     if merged['movie_mode'] not in VALID_DOWNLOAD_MODES:
         merged['movie_mode'] = DEFAULT_DOWNLOAD_PREFIX['movie_mode']
+    if merged['show_mode'] not in VALID_DOWNLOAD_MODES:
+        merged['show_mode'] = DEFAULT_DOWNLOAD_PREFIX['show_mode']
+    if merged['season_mode'] not in VALID_DOWNLOAD_MODES:
+        merged['season_mode'] = DEFAULT_DOWNLOAD_PREFIX['season_mode']
+    if merged['episode_mode'] not in VALID_DOWNLOAD_MODES:
+        merged['episode_mode'] = DEFAULT_DOWNLOAD_PREFIX['episode_mode']
     return merged
 
 
@@ -115,6 +147,65 @@ def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str,
             )
             ''',
             movies,
+        )
+        conn.commit()
+
+
+def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[str, Any]]) -> None:
+    with get_conn() as conn:
+        conn.execute('DELETE FROM plex_shows')
+        conn.execute('DELETE FROM plex_show_episodes')
+        conn.executemany(
+            '''
+            INSERT INTO plex_shows(
+                show_id,
+                plex_rating_key,
+                title,
+                year,
+                tmdb_show_id,
+                normalized_title,
+                image_url,
+                updated_at
+            )
+            VALUES(
+                :show_id,
+                :plex_rating_key,
+                :title,
+                :year,
+                :tmdb_show_id,
+                :normalized_title,
+                :image_url,
+                :updated_at
+            )
+            ''',
+            shows,
+        )
+        conn.executemany(
+            '''
+            INSERT INTO plex_show_episodes(
+                plex_rating_key,
+                show_id,
+                season_number,
+                episode_number,
+                title,
+                normalized_title,
+                tmdb_episode_id,
+                plex_web_url,
+                updated_at
+            )
+            VALUES(
+                :plex_rating_key,
+                :show_id,
+                :season_number,
+                :episode_number,
+                :title,
+                :normalized_title,
+                :tmdb_episode_id,
+                :plex_web_url,
+                :updated_at
+            )
+            ''',
+            episodes,
         )
         conn.commit()
 
@@ -210,6 +301,8 @@ def reset_app_state() -> dict[str, bool]:
     with get_conn() as conn:
         conn.execute('DELETE FROM actors')
         conn.execute('DELETE FROM plex_movies')
+        conn.execute('DELETE FROM plex_shows')
+        conn.execute('DELETE FROM plex_show_episodes')
         conn.execute('DELETE FROM settings')
         conn.commit()
     return {'ok': True}
@@ -254,6 +347,7 @@ def profile() -> dict[str, Any]:
         'tmdb_api_key': active_tmdb_key if active_tmdb_key else '',
         'download_prefix': get_download_prefix_settings(),
         'scan_logs': get_setting('scan_logs', []),
+        'show_scan_logs': get_setting('show_scan_logs', []),
     }
 
 
@@ -302,10 +396,19 @@ def select_server(payload: ServerSelectPayload) -> dict[str, Any]:
 def set_download_prefix(payload: DownloadPrefixPayload) -> dict[str, Any]:
     actor_mode = payload.actor_mode.strip()
     movie_mode = payload.movie_mode.strip()
+    show_mode = payload.show_mode.strip()
+    season_mode = payload.season_mode.strip()
+    episode_mode = payload.episode_mode.strip()
     if actor_mode not in VALID_DOWNLOAD_MODES:
         raise HTTPException(status_code=400, detail='Invalid actor keyword format')
     if movie_mode not in VALID_DOWNLOAD_MODES:
         raise HTTPException(status_code=400, detail='Invalid movie keyword format')
+    if show_mode not in VALID_DOWNLOAD_MODES:
+        raise HTTPException(status_code=400, detail='Invalid show keyword format')
+    if season_mode not in VALID_DOWNLOAD_MODES:
+        raise HTTPException(status_code=400, detail='Invalid season keyword format')
+    if episode_mode not in VALID_DOWNLOAD_MODES:
+        raise HTTPException(status_code=400, detail='Invalid episode keyword format')
 
     settings = {
         'actor_start': payload.actor_start.strip(),
@@ -314,6 +417,15 @@ def set_download_prefix(payload: DownloadPrefixPayload) -> dict[str, Any]:
         'movie_start': payload.movie_start.strip(),
         'movie_mode': movie_mode,
         'movie_end': payload.movie_end.strip(),
+        'show_start': payload.show_start.strip(),
+        'show_mode': show_mode,
+        'show_end': payload.show_end.strip(),
+        'season_start': payload.season_start.strip(),
+        'season_mode': season_mode,
+        'season_end': payload.season_end.strip(),
+        'episode_start': payload.episode_start.strip(),
+        'episode_mode': episode_mode,
+        'episode_end': payload.episode_end.strip(),
     }
     set_setting('download_prefix', settings)
     return {'ok': True, 'download_prefix': settings}
@@ -399,6 +511,77 @@ def scan_actors() -> dict[str, Any]:
     }
 
 
+@app.post('/api/scan/shows')
+def scan_shows() -> dict[str, Any]:
+    auth_token, server = ensure_auth()
+
+    try:
+        resources = get_resources(auth_token)
+        matching = next(
+            (r for r in resources if r.get('client_identifier') == server.get('client_identifier')),
+            None,
+        )
+        if matching:
+            server['connections'] = matching.get('connections', [])
+            server['token'] = matching.get('access_token', server['token'])
+            set_setting('server', server)
+    except Exception:
+        pass
+
+    uris_to_try = candidate_server_uris(server)
+    if not uris_to_try:
+        raise HTTPException(
+            status_code=502,
+            detail='No valid Plex connection URIs were found.',
+        )
+
+    last_error: Exception | None = None
+    shows: list[dict[str, Any]] | None = None
+    episodes: list[dict[str, Any]] | None = None
+    for uri in uris_to_try:
+        try:
+            shows, episodes = fetch_show_library_snapshot(
+                uri,
+                server['token'],
+                server.get('client_identifier'),
+            )
+            server['uri'] = uri
+            set_setting('server', server)
+            break
+        except (RequestsConnectionError, RequestException, ParseError) as exc:
+            last_error = exc
+            continue
+
+    if shows is None or episodes is None:
+        raise HTTPException(
+            status_code=502,
+            detail='Could not connect to Plex server via known endpoints.',
+        ) from last_error
+
+    upsert_shows_and_episodes(shows, episodes)
+    scanned_at = datetime.now(UTC).isoformat()
+    set_setting('last_show_scan_at', scanned_at)
+    show_scan_logs = get_setting('show_scan_logs', [])
+    show_scan_logs.insert(
+        0,
+        {
+            'scanned_at': scanned_at,
+            'shows': len(shows),
+            'episodes': len(episodes),
+            'server_name': server.get('name'),
+        },
+    )
+    set_setting('show_scan_logs', show_scan_logs[:100])
+
+    return {
+        'ok': True,
+        'shows': len(shows),
+        'episodes': len(episodes),
+        'last_scan_at': scanned_at,
+        'show_scan_logs': show_scan_logs[:100],
+    }
+
+
 @app.get('/api/plex/image')
 def plex_image(thumb: str = Query(...)) -> Response:
     _, server = ensure_auth()
@@ -419,7 +602,15 @@ def plex_image(thumb: str = Query(...)) -> Response:
             )
             response.raise_for_status()
             content_type = response.headers.get('content-type', 'image/jpeg')
-            return Response(content=response.content, media_type=content_type)
+            return Response(
+                content=response.content,
+                media_type=content_type,
+                headers={
+                    # Let browser cache proxied images between page reloads.
+                    # Cache invalidation is handled client-side via imgv query key.
+                    'Cache-Control': 'public, max-age=604800, immutable',
+                },
+            )
         except RequestException as exc:
             last_error = exc
             continue
@@ -546,6 +737,184 @@ def actor_movies(
     return {
         'actor': actor_data,
         'items': results,
+        'missing_only': missing_only,
+        'in_plex_only': in_plex_only,
+    }
+
+
+@app.get('/api/shows')
+def shows() -> dict[str, Any]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            '''
+            SELECT
+                s.show_id,
+                s.title,
+                s.year,
+                s.image_url,
+                s.updated_at,
+                COUNT(e.plex_rating_key) AS episodes_in_plex
+            FROM plex_shows s
+            LEFT JOIN plex_show_episodes e ON e.show_id = s.show_id
+            GROUP BY s.show_id, s.title, s.year, s.image_url, s.updated_at
+            ORDER BY episodes_in_plex DESC, s.title ASC
+            '''
+        ).fetchall()
+    return {
+        'items': [dict(r) for r in rows],
+        'last_scan_at': get_setting('last_show_scan_at'),
+    }
+
+
+@app.get('/api/shows/{show_id}/seasons')
+def show_seasons(
+    show_id: str,
+    missing_only: bool = Query(False),
+    in_plex_only: bool = Query(False),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        show = conn.execute(
+            '''
+            SELECT show_id, title, year, tmdb_show_id, image_url
+            FROM plex_shows
+            WHERE show_id = ?
+            ''',
+            (show_id,),
+        ).fetchone()
+        if not show:
+            raise HTTPException(status_code=404, detail='Show not found')
+
+        show_data = dict(show)
+        if not show_data['tmdb_show_id']:
+            found = search_tv_show(show_data['title'], show_data.get('year'))
+            if not found:
+                return {'show': show_data, 'items': []}
+            show_data['tmdb_show_id'] = found['id']
+            conn.execute(
+                'UPDATE plex_shows SET tmdb_show_id = ?, image_url = COALESCE(image_url, ?), updated_at = ? WHERE show_id = ?',
+                (found['id'], found['poster_url'], datetime.now(UTC).isoformat(), show_id),
+            )
+            conn.commit()
+
+        plex_rows = conn.execute(
+            '''
+            SELECT season_number, episode_number
+            FROM plex_show_episodes
+            WHERE show_id = ?
+            ''',
+            (show_id,),
+        ).fetchall()
+
+    plex_by_season: dict[int, set[int]] = {}
+    for row in plex_rows:
+        plex_by_season.setdefault(int(row['season_number']), set()).add(int(row['episode_number']))
+
+    try:
+        seasons = get_tv_show_seasons(int(show_data['tmdb_show_id']))
+    except TMDbNotConfiguredError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    items: list[dict[str, Any]] = []
+    for season in seasons:
+        season_no = int(season['season_number'])
+        plex_eps = plex_by_season.get(season_no, set())
+        item = {
+            **season,
+            'in_plex': bool(plex_eps),
+            'episodes_in_plex': len(plex_eps),
+        }
+        include = True
+        if missing_only and item['in_plex']:
+            include = False
+        if in_plex_only and not item['in_plex']:
+            include = False
+        if include:
+            items.append(item)
+
+    return {
+        'show': show_data,
+        'items': items,
+        'missing_only': missing_only,
+        'in_plex_only': in_plex_only,
+    }
+
+
+@app.get('/api/shows/{show_id}/seasons/{season_number}/episodes')
+def show_season_episodes(
+    show_id: str,
+    season_number: int,
+    missing_only: bool = Query(False),
+    in_plex_only: bool = Query(False),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        show = conn.execute(
+            '''
+            SELECT show_id, title, year, tmdb_show_id, image_url
+            FROM plex_shows
+            WHERE show_id = ?
+            ''',
+            (show_id,),
+        ).fetchone()
+        if not show:
+            raise HTTPException(status_code=404, detail='Show not found')
+        show_data = dict(show)
+        if not show_data['tmdb_show_id']:
+            found = search_tv_show(show_data['title'], show_data.get('year'))
+            if not found:
+                return {'show': show_data, 'season_number': season_number, 'items': []}
+            show_data['tmdb_show_id'] = found['id']
+            conn.execute(
+                'UPDATE plex_shows SET tmdb_show_id = ?, image_url = COALESCE(image_url, ?), updated_at = ? WHERE show_id = ?',
+                (found['id'], found['poster_url'], datetime.now(UTC).isoformat(), show_id),
+            )
+            conn.commit()
+
+        plex_rows = conn.execute(
+            '''
+            SELECT episode_number, plex_rating_key, plex_web_url, tmdb_episode_id
+            FROM plex_show_episodes
+            WHERE show_id = ? AND season_number = ?
+            ''',
+            (show_id, season_number),
+        ).fetchall()
+
+    plex_by_ep = {int(r['episode_number']): dict(r) for r in plex_rows}
+    plex_by_tmdb = {
+        int(r['tmdb_episode_id']): dict(r)
+        for r in plex_rows
+        if r['tmdb_episode_id'] is not None
+    }
+
+    try:
+        tmdb_episodes = get_tv_season_episodes(int(show_data['tmdb_show_id']), season_number)
+    except TMDbNotConfiguredError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    items: list[dict[str, Any]] = []
+    for episode in tmdb_episodes:
+        matched = None
+        if episode.get('tmdb_id') is not None:
+            matched = plex_by_tmdb.get(int(episode['tmdb_id']))
+        if not matched:
+            matched = plex_by_ep.get(int(episode['episode_number']))
+        item = {
+            **episode,
+            'in_plex': bool(matched),
+            'plex_rating_key': matched['plex_rating_key'] if matched else None,
+            'plex_web_url': matched['plex_web_url'] if matched else None,
+        }
+        include = True
+        if missing_only and item['in_plex']:
+            include = False
+        if in_plex_only and not item['in_plex']:
+            include = False
+        if include:
+            items.append(item)
+
+    return {
+        'show': show_data,
+        'season_number': season_number,
+        'items': items,
         'missing_only': missing_only,
         'in_plex_only': in_plex_only,
     }

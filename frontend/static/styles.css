@@ -451,6 +451,7 @@ select.secondary-btn {
 .status.error { color: #fecaca; }
 .status.success { color: #a7f3d0; }
 #scan-status.success { color: #86efac; font-weight: 700; }
+#scan-shows-status.success { color: #86efac; font-weight: 700; }
 #scan-status.error { color: #fecaca; }
 .status-check {
   color: #86efac;
@@ -595,25 +596,7 @@ select.secondary-btn {
   transition: opacity 140ms ease, transform 140ms ease;
 }
 
-.icon-btn::before {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 5px);
-  transform: translateX(-50%) translateY(3px);
-  width: 8px;
-  height: 8px;
-  background: #0f1723;
-  border-left: 1px solid #334155;
-  border-top: 1px solid #334155;
-  rotate: 225deg;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 140ms ease, transform 140ms ease;
-}
-
-.icon-btn:hover::after,
-.icon-btn:hover::before {
+.icon-btn:hover::after {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
@@ -641,8 +624,7 @@ select.secondary-btn {
 }
 
 @media (hover: none) {
-  .icon-btn::after,
-  .icon-btn::before {
+  .icon-btn::after {
     display: none;
   }
 }

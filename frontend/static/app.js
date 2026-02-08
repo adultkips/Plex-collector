@@ -2,8 +2,10 @@
 const nav = document.getElementById('floating-nav');
 const navProfile = document.getElementById('nav-profile');
 const navActors = document.getElementById('nav-actors');
+const navShows = document.getElementById('nav-shows');
 const ACTOR_PLACEHOLDER = 'https://placehold.co/500x750?text=Actor';
 const MOVIE_PLACEHOLDER = 'https://placehold.co/500x750?text=Movie';
+const SHOW_PLACEHOLDER = 'https://placehold.co/500x750?text=Show';
 const ACTORS_BATCH_SIZE = 80;
 const ACTOR_INITIAL_FILTERS = ['0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Æ', 'Ø', 'Å', '#'];
 const DEFAULT_DOWNLOAD_PREFIX = {
@@ -13,29 +15,51 @@ const DEFAULT_DOWNLOAD_PREFIX = {
   movie_start: '',
   movie_mode: 'encoded_space',
   movie_end: '',
+  show_start: '',
+  show_mode: 'encoded_space',
+  show_end: '',
+  season_start: '',
+  season_mode: 'encoded_space',
+  season_end: '',
+  episode_start: '',
+  episode_mode: 'encoded_space',
+  episode_end: '',
 };
 
 const state = {
   session: null,
   actors: [],
+  shows: [],
   profile: null,
   currentView: 'profile',
   actorsLoaded: false,
+  showsLoaded: false,
   profileLoaded: false,
   actorsSearchOpen: false,
   actorsSearchQuery: '',
+  showsSearchOpen: false,
+  showsSearchQuery: '',
   moviesSearchOpen: false,
   moviesSearchQuery: '',
   actorsSortBy: localStorage.getItem('actorsSortBy') || 'name',
   actorsSortDir: localStorage.getItem('actorsSortDir') || 'asc',
+  showsSortBy: localStorage.getItem('showsSortBy') || 'name',
+  showsSortDir: localStorage.getItem('showsSortDir') || 'asc',
+  showsInitialFilter: localStorage.getItem('showsInitialFilter') || 'A',
+  showsVisibleCount: ACTORS_BATCH_SIZE,
+  showsImageObserver: null,
+  showSeasonsCache: {},
+  showEpisodesCache: {},
   actorsInitialFilter: localStorage.getItem('actorsInitialFilter') || 'A',
   actorsVisibleCount: ACTORS_BATCH_SIZE,
   actorsImageObserver: null,
+  imageCacheKey: localStorage.getItem('imageCacheKey') || '1',
 };
 let plexAuthPopup = null;
 
 navProfile.addEventListener('click', () => routeTo('profile'));
 navActors.addEventListener('click', () => routeTo('actors'));
+navShows.addEventListener('click', () => routeTo('shows'));
 
 window.addEventListener('popstate', handleLocation);
 
@@ -69,6 +93,26 @@ function sanitizeDownloadQuery(title) {
     .trim();
 }
 
+function withImageCacheKey(url) {
+  if (!url) return url;
+  if (url.startsWith('data:')) return url;
+  try {
+    const parsed = new URL(url, window.location.origin);
+    parsed.searchParams.set('imgv', state.imageCacheKey);
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      return parsed.toString();
+    }
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return url;
+  }
+}
+
+function invalidateImageCache() {
+  state.imageCacheKey = String(Date.now());
+  localStorage.setItem('imageCacheKey', state.imageCacheKey);
+}
+
 function getDownloadPrefixSettings() {
   const fromProfile = state.profile?.download_prefix || {};
   return {
@@ -87,9 +131,18 @@ function buildDownloadKeyword(rawText, mode) {
 function buildDownloadLink(type, rawText) {
   const settings = getDownloadPrefixSettings();
   const isActor = type === 'actor';
-  const start = isActor ? settings.actor_start : settings.movie_start;
-  const mode = isActor ? settings.actor_mode : settings.movie_mode;
-  const end = isActor ? settings.actor_end : settings.movie_end;
+  const isShow = type === 'show';
+  const isSeason = type === 'season';
+  const isEpisode = type === 'episode';
+  const start = isActor
+    ? settings.actor_start
+    : (isShow ? settings.show_start : (isSeason ? settings.season_start : (isEpisode ? settings.episode_start : settings.movie_start)));
+  const mode = isActor
+    ? settings.actor_mode
+    : (isShow ? settings.show_mode : (isSeason ? settings.season_mode : (isEpisode ? settings.episode_mode : settings.movie_mode)));
+  const end = isActor
+    ? settings.actor_end
+    : (isShow ? settings.show_end : (isSeason ? settings.season_end : (isEpisode ? settings.episode_end : settings.movie_end)));
   if (!start && !end) return '';
   const keyword = buildDownloadKeyword(rawText, mode);
   if (!keyword) return '';
@@ -98,14 +151,37 @@ function buildDownloadLink(type, rawText) {
 
 function buildDownloadExampleText(type, settings) {
   const isActor = type === 'actor';
-  const start = (isActor ? settings.actor_start : settings.movie_start) || '';
-  const mode = isActor ? settings.actor_mode : settings.movie_mode;
-  const end = (isActor ? settings.actor_end : settings.movie_end) || '';
+  const isShow = type === 'show';
+  const isSeason = type === 'season';
+  const isEpisode = type === 'episode';
+  const start = (isActor
+    ? settings.actor_start
+    : (isShow ? settings.show_start : (isSeason ? settings.season_start : (isEpisode ? settings.episode_start : settings.movie_start)))) || '';
+  const mode = isActor
+    ? settings.actor_mode
+    : (isShow ? settings.show_mode : (isSeason ? settings.season_mode : (isEpisode ? settings.episode_mode : settings.movie_mode)));
+  const end = (isActor
+    ? settings.actor_end
+    : (isShow ? settings.show_end : (isSeason ? settings.season_end : (isEpisode ? settings.episode_end : settings.movie_end)))) || '';
   if (!start && !end) {
     return '';
   }
-  const keyword = buildDownloadKeyword(isActor ? 'bruce willis' : 'a day to die', mode);
+  const keyword = buildDownloadKeyword(
+    isActor ? 'bruce willis' : (isShow ? 'breaking bad' : (isSeason ? 'breaking bad s01' : (isEpisode ? 'breaking bad s01e01' : 'a day to die'))),
+    mode,
+  );
   return `E.g.: ${start}${keyword}${end}`;
+}
+
+function buildSeasonKeyword(showTitle, seasonNumber) {
+  const seasonTag = `s${String(Number(seasonNumber) || 0).padStart(2, '0')}`;
+  return `${showTitle || ''} ${seasonTag}`.trim();
+}
+
+function buildEpisodeKeyword(showTitle, seasonNumber, episodeNumber) {
+  const seasonTag = `s${String(Number(seasonNumber) || 0).padStart(2, '0')}`;
+  const episodeTag = `e${String(Number(episodeNumber) || 0).padStart(2, '0')}`;
+  return `${showTitle || ''} ${seasonTag}${episodeTag}`.trim();
 }
 
 function getActorInitialBucket(name) {
@@ -139,6 +215,8 @@ function compareActorNames(a, b) {
 function routeTo(view, actorId = null) {
   if (view === 'actor-detail' && actorId) {
     history.pushState({}, '', `/actors/${actorId}`);
+  } else if (view === 'show-detail' && actorId) {
+    history.pushState({}, '', `/shows/${actorId}`);
   } else {
     history.pushState({}, '', `/${view === 'profile' ? '' : view}`);
   }
@@ -152,6 +230,7 @@ function setNavVisible(visible) {
 function setActiveNav(view) {
   navProfile.classList.toggle('active', view === 'profile');
   navActors.classList.toggle('active', view === 'actors');
+  navShows.classList.toggle('active', view === 'shows');
 }
 
 function setFullWidthGridMode(enabled) {
@@ -197,6 +276,29 @@ async function handleLocation() {
     setNavVisible(true);
     await renderActors();
     setActiveNav('actors');
+    return;
+  }
+
+  if (path.startsWith('/shows/')) {
+    setFullWidthGridMode(true);
+    setNavVisible(true);
+    const seasonMatch = path.match(/^\/shows\/([^/]+)\/seasons\/(\d+)$/);
+    if (seasonMatch) {
+      const [, showId, seasonNumber] = seasonMatch;
+      await renderShowEpisodes(showId, Number(seasonNumber));
+    } else {
+      const showId = path.split('/')[2];
+      await renderShowSeasons(showId);
+    }
+    setActiveNav('shows');
+    return;
+  }
+
+  if (path === '/shows') {
+    setFullWidthGridMode(true);
+    setNavVisible(true);
+    await renderShows();
+    setActiveNav('shows');
     return;
   }
 
@@ -352,14 +454,20 @@ async function renderProfile() {
   const downloadPrefix = getDownloadPrefixSettings();
   const actorExampleText = buildDownloadExampleText('actor', downloadPrefix);
   const movieExampleText = buildDownloadExampleText('movie', downloadPrefix);
+  const showExampleText = buildDownloadExampleText('show', downloadPrefix);
+  const seasonExampleText = buildDownloadExampleText('season', downloadPrefix);
+  const episodeExampleText = buildDownloadExampleText('episode', downloadPrefix);
   const actorPrefixConfigured = Boolean((downloadPrefix.actor_start || '').trim() || (downloadPrefix.actor_end || '').trim());
   const moviePrefixConfigured = Boolean((downloadPrefix.movie_start || '').trim() || (downloadPrefix.movie_end || '').trim());
+  const showPrefixConfigured = Boolean((downloadPrefix.show_start || '').trim() || (downloadPrefix.show_end || '').trim());
+  const seasonPrefixConfigured = Boolean((downloadPrefix.season_start || '').trim() || (downloadPrefix.season_end || '').trim());
+  const episodePrefixConfigured = Boolean((downloadPrefix.episode_start || '').trim() || (downloadPrefix.episode_end || '').trim());
 
   app.innerHTML = `
     <section class="profile">
       <div class="profile-header card">
         <button id="reset-btn" class="secondary-btn profile-reset-btn">Reset</button>
-        <img src="${data.profile?.thumb || 'https://placehold.co/120x120?text=Plex'}" alt="Profile" />
+        <img src="${withImageCacheKey(data.profile?.thumb) || 'https://placehold.co/120x120?text=Plex'}" alt="Profile" />
         <div>
           <h2>${data.profile?.username || 'Unknown user'}</h2>
           <div class="row settings-row">
@@ -416,6 +524,45 @@ async function renderProfile() {
           <span id="movie-prefix-status" class="meta no-margin"></span>
         </div>
         <div id="movie-prefix-example" class="meta no-margin prefix-example ${movieExampleText ? '' : 'hidden'}">${movieExampleText}</div>
+        <div class="row settings-row">
+          <span class="meta no-margin prefix-label settings-label-strong">Show prefix:</span>
+          <input id="show-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.show_start}" />
+          <select id="show-prefix-format" class="secondary-btn prefix-format-select" aria-label="Show keyword format">
+            <option value="encoded_space" ${downloadPrefix.show_mode === 'encoded_space' ? 'selected' : ''}>Breaking%20Bad</option>
+            <option value="hyphen" ${downloadPrefix.show_mode === 'hyphen' ? 'selected' : ''}>Breaking-Bad</option>
+          </select>
+          <input id="show-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.show_end}" />
+          <button id="show-prefix-save-btn" class="secondary-btn">Save</button>
+          <span id="show-prefix-check" class="meta no-margin status-check">${showPrefixConfigured ? '✓' : ''}</span>
+          <span id="show-prefix-status" class="meta no-margin"></span>
+        </div>
+        <div id="show-prefix-example" class="meta no-margin prefix-example ${showExampleText ? '' : 'hidden'}">${showExampleText}</div>
+        <div class="row settings-row">
+          <span class="meta no-margin prefix-label settings-label-strong">Season prefix:</span>
+          <input id="season-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.season_start}" />
+          <select id="season-prefix-format" class="secondary-btn prefix-format-select" aria-label="Season keyword format">
+            <option value="encoded_space" ${downloadPrefix.season_mode === 'encoded_space' ? 'selected' : ''}>Breaking%20Bad%20s01</option>
+            <option value="hyphen" ${downloadPrefix.season_mode === 'hyphen' ? 'selected' : ''}>Breaking-Bad-s01</option>
+          </select>
+          <input id="season-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.season_end}" />
+          <button id="season-prefix-save-btn" class="secondary-btn">Save</button>
+          <span id="season-prefix-check" class="meta no-margin status-check">${seasonPrefixConfigured ? '✓' : ''}</span>
+          <span id="season-prefix-status" class="meta no-margin"></span>
+        </div>
+        <div id="season-prefix-example" class="meta no-margin prefix-example ${seasonExampleText ? '' : 'hidden'}">${seasonExampleText}</div>
+        <div class="row settings-row">
+          <span class="meta no-margin prefix-label settings-label-strong">Episode prefix:</span>
+          <input id="episode-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.episode_start}" />
+          <select id="episode-prefix-format" class="secondary-btn prefix-format-select" aria-label="Episode keyword format">
+            <option value="encoded_space" ${downloadPrefix.episode_mode === 'encoded_space' ? 'selected' : ''}>Breaking%20Bad%20s01e01</option>
+            <option value="hyphen" ${downloadPrefix.episode_mode === 'hyphen' ? 'selected' : ''}>Breaking-Bad-s01e01</option>
+          </select>
+          <input id="episode-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.episode_end}" />
+          <button id="episode-prefix-save-btn" class="secondary-btn">Save</button>
+          <span id="episode-prefix-check" class="meta no-margin status-check">${episodePrefixConfigured ? '✓' : ''}</span>
+          <span id="episode-prefix-status" class="meta no-margin"></span>
+        </div>
+        <div id="episode-prefix-example" class="meta no-margin prefix-example ${episodeExampleText ? '' : 'hidden'}">${episodeExampleText}</div>
       </div>
 
       <div class="card library-sync-card">
@@ -423,7 +570,9 @@ async function renderProfile() {
         <p class="subtitle">Scan Plex libraries.</p>
         <div class="row library-sync-actions">
           <button id="scan-btn" class="primary-btn">Scan Actors</button>
+          <button id="scan-shows-btn" class="primary-btn">Scan Shows</button>
           <span id="scan-status" class="meta"></span>
+          <span id="scan-shows-status" class="meta"></span>
         </div>
         <section class="scan-log">
           <h4>Log</h4>
@@ -434,6 +583,7 @@ async function renderProfile() {
   `;
 
   document.getElementById('scan-btn').addEventListener('click', runScan);
+  document.getElementById('scan-shows-btn').addEventListener('click', runShowScan);
   document.getElementById('reset-btn').addEventListener('click', resetApp);
   document.getElementById('tmdb-save-btn').addEventListener('click', saveTmdbKey);
   const serverSelect = document.getElementById('server-select');
@@ -449,7 +599,10 @@ async function renderProfile() {
   }
   document.getElementById('actor-prefix-save-btn').addEventListener('click', saveActorPrefix);
   document.getElementById('movie-prefix-save-btn').addEventListener('click', saveMoviePrefix);
-  renderScanLogs(data.scan_logs || []);
+  document.getElementById('show-prefix-save-btn').addEventListener('click', saveShowPrefix);
+  document.getElementById('season-prefix-save-btn').addEventListener('click', saveSeasonPrefix);
+  document.getElementById('episode-prefix-save-btn').addEventListener('click', saveEpisodePrefix);
+  renderScanLogs(data.scan_logs || [], data.show_scan_logs || []);
 }
 
 async function loadProfileData(forceRefresh = false) {
@@ -470,6 +623,7 @@ async function selectServer(clientIdentifier) {
     status.textContent = 'Saved';
     state.profileLoaded = false;
     state.actorsLoaded = false;
+    state.showsLoaded = false;
     await renderProfile();
   } catch (error) {
     status.textContent = error.message;
@@ -526,6 +680,15 @@ async function saveActorPrefix() {
     movie_start: existing.movie_start,
     movie_mode: existing.movie_mode,
     movie_end: existing.movie_end,
+    show_start: existing.show_start,
+    show_mode: existing.show_mode,
+    show_end: existing.show_end,
+    season_start: existing.season_start,
+    season_mode: existing.season_mode,
+    season_end: existing.season_end,
+    episode_start: existing.episode_start,
+    episode_mode: existing.episode_mode,
+    episode_end: existing.episode_end,
   };
   try {
     const result = await api('/api/download-prefix', {
@@ -559,6 +722,15 @@ async function saveMoviePrefix() {
     movie_start: document.getElementById('movie-prefix-start').value.trim(),
     movie_mode: document.getElementById('movie-prefix-format').value,
     movie_end: document.getElementById('movie-prefix-end').value.trim(),
+    show_start: existing.show_start,
+    show_mode: existing.show_mode,
+    show_end: existing.show_end,
+    season_start: existing.season_start,
+    season_mode: existing.season_mode,
+    season_end: existing.season_end,
+    episode_start: existing.episode_start,
+    episode_mode: existing.episode_mode,
+    episode_end: existing.episode_end,
   };
   try {
     const result = await api('/api/download-prefix', {
@@ -579,19 +751,153 @@ async function saveMoviePrefix() {
   }
 }
 
-function renderScanLogs(logs) {
+async function saveShowPrefix() {
+  const status = document.getElementById('show-prefix-status');
+  const check = document.getElementById('show-prefix-check');
+  const example = document.getElementById('show-prefix-example');
+  status.textContent = 'Saving...';
+  const existing = getDownloadPrefixSettings();
+  const payload = {
+    actor_start: existing.actor_start,
+    actor_mode: existing.actor_mode,
+    actor_end: existing.actor_end,
+    movie_start: existing.movie_start,
+    movie_mode: existing.movie_mode,
+    movie_end: existing.movie_end,
+    show_start: document.getElementById('show-prefix-start').value.trim(),
+    show_mode: document.getElementById('show-prefix-format').value,
+    show_end: document.getElementById('show-prefix-end').value.trim(),
+    season_start: existing.season_start,
+    season_mode: existing.season_mode,
+    season_end: existing.season_end,
+    episode_start: existing.episode_start,
+    episode_mode: existing.episode_mode,
+    episode_end: existing.episode_end,
+  };
+  try {
+    const result = await api('/api/download-prefix', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    state.profile = { ...state.profile, download_prefix: result.download_prefix };
+    const configured = Boolean((result.download_prefix.show_start || '').trim() || (result.download_prefix.show_end || '').trim());
+    if (check) check.textContent = configured ? '✓' : '';
+    if (example) {
+      const text = buildDownloadExampleText('show', result.download_prefix);
+      example.textContent = text;
+      example.classList.toggle('hidden', !text);
+    }
+    status.textContent = 'Saved';
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function saveSeasonPrefix() {
+  const status = document.getElementById('season-prefix-status');
+  const check = document.getElementById('season-prefix-check');
+  const example = document.getElementById('season-prefix-example');
+  status.textContent = 'Saving...';
+  const existing = getDownloadPrefixSettings();
+  const payload = {
+    actor_start: existing.actor_start,
+    actor_mode: existing.actor_mode,
+    actor_end: existing.actor_end,
+    movie_start: existing.movie_start,
+    movie_mode: existing.movie_mode,
+    movie_end: existing.movie_end,
+    show_start: existing.show_start,
+    show_mode: existing.show_mode,
+    show_end: existing.show_end,
+    season_start: document.getElementById('season-prefix-start').value.trim(),
+    season_mode: document.getElementById('season-prefix-format').value,
+    season_end: document.getElementById('season-prefix-end').value.trim(),
+    episode_start: existing.episode_start,
+    episode_mode: existing.episode_mode,
+    episode_end: existing.episode_end,
+  };
+  try {
+    const result = await api('/api/download-prefix', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    state.profile = { ...state.profile, download_prefix: result.download_prefix };
+    const configured = Boolean((result.download_prefix.season_start || '').trim() || (result.download_prefix.season_end || '').trim());
+    if (check) check.textContent = configured ? '✓' : '';
+    if (example) {
+      const text = buildDownloadExampleText('season', result.download_prefix);
+      example.textContent = text;
+      example.classList.toggle('hidden', !text);
+    }
+    status.textContent = 'Saved';
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function saveEpisodePrefix() {
+  const status = document.getElementById('episode-prefix-status');
+  const check = document.getElementById('episode-prefix-check');
+  const example = document.getElementById('episode-prefix-example');
+  status.textContent = 'Saving...';
+  const existing = getDownloadPrefixSettings();
+  const payload = {
+    actor_start: existing.actor_start,
+    actor_mode: existing.actor_mode,
+    actor_end: existing.actor_end,
+    movie_start: existing.movie_start,
+    movie_mode: existing.movie_mode,
+    movie_end: existing.movie_end,
+    show_start: existing.show_start,
+    show_mode: existing.show_mode,
+    show_end: existing.show_end,
+    season_start: existing.season_start,
+    season_mode: existing.season_mode,
+    season_end: existing.season_end,
+    episode_start: document.getElementById('episode-prefix-start').value.trim(),
+    episode_mode: document.getElementById('episode-prefix-format').value,
+    episode_end: document.getElementById('episode-prefix-end').value.trim(),
+  };
+  try {
+    const result = await api('/api/download-prefix', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    state.profile = { ...state.profile, download_prefix: result.download_prefix };
+    const configured = Boolean((result.download_prefix.episode_start || '').trim() || (result.download_prefix.episode_end || '').trim());
+    if (check) check.textContent = configured ? '✓' : '';
+    if (example) {
+      const text = buildDownloadExampleText('episode', result.download_prefix);
+      example.textContent = text;
+      example.classList.toggle('hidden', !text);
+    }
+    status.textContent = 'Saved';
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+function renderScanLogs(actorLogs, showLogs = []) {
   const list = document.getElementById('scan-log-list');
   if (!list) return;
 
-  if (!logs.length) {
+  const mergedLogs = [
+    ...(actorLogs || []).map((entry) => ({ ...entry, _kind: 'actors' })),
+    ...(showLogs || []).map((entry) => ({ ...entry, _kind: 'shows' })),
+  ].sort((a, b) => new Date(b.scanned_at).getTime() - new Date(a.scanned_at).getTime());
+
+  if (!mergedLogs.length) {
     list.innerHTML = '<li class="scan-log-item">No scans yet.</li>';
     return;
   }
 
-  list.innerHTML = logs
+  list.innerHTML = mergedLogs
     .slice(0, 5)
     .map((entry) => {
       const dateText = new Date(entry.scanned_at).toLocaleString();
+      if (entry._kind === 'shows') {
+        return `<li class="scan-log-item">${dateText} - ${entry.shows} shows, ${entry.episodes} episodes</li>`;
+      }
       return `<li class="scan-log-item">${dateText} - ${entry.actors} actors, ${entry.movies} movies</li>`;
     })
     .join('');
@@ -634,12 +940,42 @@ async function runScan() {
 
   try {
     const result = await api('/api/scan/actors', { method: 'POST' });
+    invalidateImageCache();
     status.classList.add('success');
     status.textContent = '✓';
     state.actorsLoaded = false;
-    renderScanLogs(result.scan_logs || []);
+    const showLogs = state.profile?.show_scan_logs || [];
+    renderScanLogs(result.scan_logs || [], showLogs);
     showScanSuccessModal();
     setTimeout(closeScanModal, 700);
+  } catch (error) {
+    status.classList.remove('success');
+    status.classList.add('error');
+    status.textContent = error.message;
+    closeScanModal();
+  }
+}
+
+async function runShowScan() {
+  const status = document.getElementById('scan-shows-status');
+  const scanText = 'Scanning...';
+  status.classList.remove('success', 'error');
+  status.textContent = 'Scanning...';
+  showScanModal(scanText);
+
+  try {
+    const result = await api('/api/scan/shows', { method: 'POST' });
+    invalidateImageCache();
+    status.classList.add('success');
+    status.textContent = '✓';
+    state.showsLoaded = false;
+    state.showSeasonsCache = {};
+    state.showEpisodesCache = {};
+    showScanSuccessModal();
+    setTimeout(closeScanModal, 700);
+    state.profile = { ...state.profile, show_scan_logs: result.show_scan_logs || [] };
+    const actorLogs = state.profile?.scan_logs || [];
+    renderScanLogs(actorLogs, result.show_scan_logs || []);
   } catch (error) {
     status.classList.remove('success');
     status.classList.add('error');
@@ -655,8 +991,12 @@ async function resetApp() {
   await api('/api/reset', { method: 'POST' });
   state.session = { authenticated: false };
   state.actors = [];
+  state.shows = [];
   state.profile = null;
   state.actorsLoaded = false;
+  state.showsLoaded = false;
+  state.showSeasonsCache = {};
+  state.showEpisodesCache = {};
   state.profileLoaded = false;
   history.pushState({}, '', '/');
   renderOnboarding();
@@ -792,7 +1132,7 @@ async function renderActors() {
       const actorDownloadBadge = downloadUrl
         ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
         : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
-      const actorImage = actor.image_url || ACTOR_PLACEHOLDER;
+      const actorImage = withImageCacheKey(actor.image_url) || ACTOR_PLACEHOLDER;
       const card = document.createElement('article');
       card.className = 'actor-card';
       card.innerHTML = `
@@ -883,6 +1223,450 @@ async function renderActors() {
 
   updateActorsSearchClear();
   renderActorsGrid();
+}
+
+async function renderShows() {
+  let data = { items: state.shows, last_scan_at: null };
+  if (!state.showsLoaded) {
+    data = await api('/api/shows');
+    state.shows = data.items;
+    state.showsLoaded = true;
+  }
+
+  if (!state.shows.length) {
+    app.innerHTML = `
+      <div class="topbar">
+        <h2>Shows</h2>
+      </div>
+      <div class="empty actors-empty">No shows yet. Go to Profile and run a show scan first.</div>
+    `;
+    return;
+  }
+
+  app.innerHTML = `
+    <div class="topbar">
+      <div class="topbar-title">
+        <h2>Shows</h2>
+        <div class="meta">${state.shows.length} shows ${data.last_scan_at ? `- last scan ${new Date(data.last_scan_at).toLocaleString()}` : ''}</div>
+      </div>
+      <div class="row">
+        <div id="shows-search-control" class="search-control ${state.showsSearchOpen ? 'open' : ''}">
+          <button id="shows-search-toggle" class="search-toggle-btn" title="Search" aria-label="Search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 1-4.24 10.24A6 6 0 0 1 10 4m0-2a8 8 0 1 0 5.29 14l4.85 4.85 1.41-1.41-4.85-4.85A8 8 0 0 0 10 2Z"/></svg>
+          </button>
+          <input id="shows-search-input" class="search-input" type="text" placeholder="Search shows" value="${state.showsSearchQuery}" />
+          <button id="shows-search-clear" class="search-clear-btn ${state.showsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
+        </div>
+        <select id="shows-sort-by" class="secondary-btn" aria-label="Sort shows by">
+          <option value="name" ${state.showsSortBy === 'name' ? 'selected' : ''}>Name</option>
+          <option value="amount" ${state.showsSortBy === 'amount' ? 'selected' : ''}>Amount</option>
+        </select>
+        <button id="shows-sort-dir" class="toggle-btn" title="Toggle sort direction" aria-label="Toggle sort direction">${state.showsSortDir === 'asc' ? '↑' : '↓'}</button>
+      </div>
+    </div>
+    <div class="alphabet-filter" id="shows-alphabet-filter">
+      ${(() => {
+        const initials = new Set(state.shows.map((show) => getActorInitialBucket(show.title)));
+        const dynamicFilters = ACTOR_INITIAL_FILTERS.filter((key) => {
+          if (['Æ', 'Ø', 'Å'].includes(key)) return initials.has(key);
+          return true;
+        });
+        if (!dynamicFilters.includes(state.showsInitialFilter)) {
+          state.showsInitialFilter = 'A';
+          localStorage.setItem('showsInitialFilter', state.showsInitialFilter);
+        }
+        return dynamicFilters
+          .map((key) => `<button class="alpha-btn ${state.showsInitialFilter === key ? 'active' : ''}" data-filter="${key}">${key}</button>`)
+          .join('');
+      })()}
+    </div>
+    <section class="grid" id="shows-grid"></section>
+    <div class="load-more-wrap" id="shows-load-more-wrap"></div>
+  `;
+
+  document.getElementById('shows-sort-by').addEventListener('change', (event) => {
+    state.showsSortBy = event.target.value;
+    localStorage.setItem('showsSortBy', state.showsSortBy);
+    state.showsVisibleCount = ACTORS_BATCH_SIZE;
+    renderShows();
+  });
+  document.getElementById('shows-sort-dir').addEventListener('click', () => {
+    state.showsSortDir = state.showsSortDir === 'asc' ? 'desc' : 'asc';
+    localStorage.setItem('showsSortDir', state.showsSortDir);
+    state.showsVisibleCount = ACTORS_BATCH_SIZE;
+    renderShows();
+  });
+
+  const grid = document.getElementById('shows-grid');
+  const loadMoreWrap = document.getElementById('shows-load-more-wrap');
+  const alphabetFilterEl = document.getElementById('shows-alphabet-filter');
+  const sortedShows = [...state.shows].sort((a, b) => {
+    if (state.showsSortBy === 'name') {
+      return compareActorNames({ name: a.title }, { name: b.title });
+    }
+    return (a.episodes_in_plex || 0) - (b.episodes_in_plex || 0);
+  });
+  if (state.showsSortDir === 'desc') sortedShows.reverse();
+
+  const renderShowsGrid = () => {
+    const query = state.showsSearchQuery.trim().toLowerCase();
+    const isSearching = query.length > 0;
+    const filteredByInitial = sortedShows.filter((show) => getActorInitialBucket(show.title) === state.showsInitialFilter);
+    const visible = query ? sortedShows.filter((show) => (show.title || '').toLowerCase().includes(query)) : filteredByInitial;
+    const renderItems = visible.slice(0, state.showsVisibleCount);
+
+    for (const button of alphabetFilterEl.querySelectorAll('.alpha-btn')) {
+      button.classList.remove('active');
+      button.disabled = isSearching;
+      if (!isSearching && button.dataset.filter === state.showsInitialFilter) button.classList.add('active');
+    }
+
+    if (state.showsImageObserver) {
+      state.showsImageObserver.disconnect();
+      state.showsImageObserver = null;
+    }
+    if ('IntersectionObserver' in window) {
+      state.showsImageObserver = new IntersectionObserver((entries, observer) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const img = entry.target;
+          const lazySrc = img.dataset.src;
+          if (lazySrc && img.src !== lazySrc) img.src = lazySrc;
+          observer.unobserve(img);
+        }
+      }, { rootMargin: '180px 0px' });
+    }
+
+    grid.innerHTML = '';
+    for (const show of renderItems) {
+      const downloadUrl = buildDownloadLink('show', show.title);
+      const showDownloadBadge = downloadUrl
+        ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
+        : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
+      const showImage = withImageCacheKey(show.image_url) || SHOW_PLACEHOLDER;
+      const card = document.createElement('article');
+      card.className = 'actor-card';
+      card.innerHTML = `
+        <div class="poster-wrap">
+          <img class="poster show-poster-lazy" src="${SHOW_PLACEHOLDER}" data-src="${showImage}" alt="${show.title}" loading="lazy" />
+          ${showDownloadBadge}
+        </div>
+        <div class="caption">
+          <div class="name">${show.title}</div>
+          <div class="count">${show.episodes_in_plex || 0} episodes from Plex</div>
+        </div>
+      `;
+      const poster = card.querySelector('.poster');
+      applyImageFallback(poster, SHOW_PLACEHOLDER);
+      if (state.showsImageObserver) state.showsImageObserver.observe(poster);
+      else poster.src = showImage;
+      const downloadLink = card.querySelector('.badge-link');
+      downloadLink.addEventListener('click', (event) => event.stopPropagation());
+      card.addEventListener('click', () => routeTo('show-detail', show.show_id));
+      grid.appendChild(card);
+    }
+
+    const remaining = visible.length - renderItems.length;
+    if (remaining > 0) {
+      loadMoreWrap.innerHTML = `<button id="shows-load-more" class="secondary-btn">Load more (${remaining})</button>`;
+      document.getElementById('shows-load-more').addEventListener('click', () => {
+        state.showsVisibleCount += ACTORS_BATCH_SIZE;
+        renderShowsGrid();
+      });
+    } else {
+      loadMoreWrap.innerHTML = '';
+    }
+  };
+
+  document.getElementById('shows-alphabet-filter').addEventListener('click', (event) => {
+    const target = event.target.closest('.alpha-btn');
+    if (!target) return;
+    state.showsInitialFilter = target.dataset.filter;
+    localStorage.setItem('showsInitialFilter', state.showsInitialFilter);
+    state.showsVisibleCount = ACTORS_BATCH_SIZE;
+    renderShows();
+  });
+
+  const showsSearchControl = document.getElementById('shows-search-control');
+  const showsSearchToggle = document.getElementById('shows-search-toggle');
+  const showsSearchInput = document.getElementById('shows-search-input');
+  const showsSearchClear = document.getElementById('shows-search-clear');
+  const updateShowsSearchClear = () => {
+    const hasValue = !!state.showsSearchQuery.trim();
+    showsSearchClear.classList.toggle('hidden', !state.showsSearchOpen || !hasValue);
+  };
+
+  showsSearchToggle.addEventListener('click', () => {
+    state.showsSearchOpen = !state.showsSearchOpen;
+    showsSearchControl.classList.toggle('open', state.showsSearchOpen);
+    if (state.showsSearchOpen) showsSearchInput.focus();
+    else {
+      state.showsSearchQuery = '';
+      showsSearchInput.value = '';
+      state.showsVisibleCount = ACTORS_BATCH_SIZE;
+      renderShowsGrid();
+    }
+    updateShowsSearchClear();
+  });
+  showsSearchInput.addEventListener('input', (event) => {
+    state.showsSearchQuery = event.target.value;
+    state.showsVisibleCount = ACTORS_BATCH_SIZE;
+    renderShowsGrid();
+    updateShowsSearchClear();
+  });
+  showsSearchClear.addEventListener('click', () => {
+    state.showsSearchQuery = '';
+    showsSearchInput.value = '';
+    showsSearchInput.focus();
+    state.showsVisibleCount = ACTORS_BATCH_SIZE;
+    renderShowsGrid();
+    updateShowsSearchClear();
+  });
+
+  updateShowsSearchClear();
+  renderShowsGrid();
+}
+
+function showSeasonsCacheKey(showId, missingOnly, inPlexOnly) {
+  return `${showId}|m:${missingOnly ? 1 : 0}|p:${inPlexOnly ? 1 : 0}`;
+}
+
+function showEpisodesCacheKey(showId, seasonNumber, missingOnly, inPlexOnly) {
+  return `${showId}|s:${seasonNumber}|m:${missingOnly ? 1 : 0}|p:${inPlexOnly ? 1 : 0}`;
+}
+
+async function getShowSeasonsData(showId, missingOnly, inPlexOnly) {
+  const key = showSeasonsCacheKey(showId, missingOnly, inPlexOnly);
+  if (state.showSeasonsCache[key]) {
+    return state.showSeasonsCache[key];
+  }
+  const data = await api(`/api/shows/${showId}/seasons?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}`);
+  state.showSeasonsCache[key] = data;
+  return data;
+}
+
+async function getShowEpisodesData(showId, seasonNumber, missingOnly, inPlexOnly) {
+  const key = showEpisodesCacheKey(showId, seasonNumber, missingOnly, inPlexOnly);
+  if (state.showEpisodesCache[key]) {
+    return state.showEpisodesCache[key];
+  }
+  const data = await api(`/api/shows/${showId}/seasons/${seasonNumber}/episodes?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}`);
+  state.showEpisodesCache[key] = data;
+  return data;
+}
+
+async function renderShowSeasons(showId) {
+  const search = new URLSearchParams(window.location.search);
+  const missingOnly = search.get('missingOnly') === '1';
+  const inPlexOnly = search.get('inPlexOnly') === '1';
+  app.innerHTML = `
+    <div class="topbar">
+      <div class="topbar-left">
+        <button id="shows-back-loading" class="back-icon-btn" title="Back to Shows" aria-label="Back to Shows">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg>
+        </button>
+        <div class="topbar-title">
+          <h2>Loading seasons...</h2>
+          <div class="meta">Please wait</div>
+        </div>
+      </div>
+    </div>
+    <section class="grid"><div class="empty">Loading...</div></section>
+  `;
+  document.getElementById('shows-back-loading')?.addEventListener('click', () => routeTo('shows'));
+
+  const data = await getShowSeasonsData(showId, missingOnly, inPlexOnly);
+
+  app.innerHTML = `
+    <div class="topbar">
+      <div class="topbar-left">
+        <button id="shows-back" class="back-icon-btn" title="Back to Shows" aria-label="Back to Shows">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg>
+        </button>
+        <div class="topbar-title">
+          <h2>${data.show.title}</h2>
+          <div class="meta">${data.items.length} seasons</div>
+        </div>
+      </div>
+      <div class="row">
+        <button id="shows-missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">Missing</button>
+        <button id="shows-in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">In Plex</button>
+      </div>
+    </div>
+    <section class="grid" id="show-seasons-grid"></section>
+  `;
+
+  const pushQuery = (params) => {
+    const query = params.toString();
+    history.pushState({}, '', `/shows/${showId}${query ? `?${query}` : ''}`);
+    renderShowSeasons(showId);
+  };
+  document.getElementById('shows-back').addEventListener('click', () => routeTo('shows'));
+  document.getElementById('shows-missing-toggle').addEventListener('click', () => {
+    const params = new URLSearchParams();
+    const next = !missingOnly;
+    if (next) params.set('missingOnly', '1');
+    else if (inPlexOnly) params.set('inPlexOnly', '1');
+    pushQuery(params);
+  });
+  document.getElementById('shows-in-plex-toggle').addEventListener('click', () => {
+    const params = new URLSearchParams();
+    const next = !inPlexOnly;
+    if (next) params.set('inPlexOnly', '1');
+    else if (missingOnly) params.set('missingOnly', '1');
+    pushQuery(params);
+  });
+
+  const grid = document.getElementById('show-seasons-grid');
+  if (!data.items.length) {
+    grid.innerHTML = '<div class="empty">No seasons found.</div>';
+    return;
+  }
+
+  // Prefetch unfiltered episodes in the background to reduce click delay.
+  if (!missingOnly && !inPlexOnly) {
+    for (const season of data.items) {
+      const seasonNo = Number(season.season_number);
+      const cacheKey = showEpisodesCacheKey(showId, seasonNo, false, false);
+      if (state.showEpisodesCache[cacheKey]) continue;
+      getShowEpisodesData(showId, seasonNo, false, false).catch(() => {});
+    }
+  }
+
+  for (const season of data.items) {
+    const seasonDownloadUrl = buildDownloadLink('season', buildSeasonKeyword(data.show.title, season.season_number));
+    const seasonDownloadBadge = seasonDownloadUrl
+      ? `<a class="badge-link badge-overlay badge-download" href="${seasonDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
+      : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>';
+    const card = document.createElement('article');
+    card.className = 'movie-card';
+    card.innerHTML = `
+      <div class="poster-wrap">
+        <img class="poster" src="${withImageCacheKey(season.poster_url) || SHOW_PLACEHOLDER}" alt="${season.name}" loading="lazy" />
+        ${
+          season.in_plex
+            ? '<span class="badge-link badge-overlay">In Plex <span class="badge-icon badge-icon-check">✓</span></span>'
+            : seasonDownloadBadge
+        }
+      </div>
+      <div class="caption">
+        <div class="name">${season.name}</div>
+        <div class="year">${season.episodes_in_plex || 0}/${season.episode_count || 0} in Plex</div>
+      </div>
+    `;
+    applyImageFallback(card.querySelector('.poster'), SHOW_PLACEHOLDER);
+    const badge = card.querySelector('.badge-overlay');
+    if (badge && badge.tagName === 'A') badge.addEventListener('click', (event) => event.stopPropagation());
+    card.addEventListener('click', () => {
+      history.pushState({}, '', `/shows/${showId}/seasons/${season.season_number}`);
+      handleLocation();
+    });
+    grid.appendChild(card);
+  }
+}
+
+async function renderShowEpisodes(showId, seasonNumber) {
+  const search = new URLSearchParams(window.location.search);
+  const missingOnly = search.get('missingOnly') === '1';
+  const inPlexOnly = search.get('inPlexOnly') === '1';
+  app.innerHTML = `
+    <div class="topbar">
+      <div class="topbar-left">
+        <button id="season-back-loading" class="back-icon-btn" title="Back to Seasons" aria-label="Back to Seasons">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg>
+        </button>
+        <div class="topbar-title">
+          <h2>Loading episodes...</h2>
+          <div class="meta">Please wait</div>
+        </div>
+      </div>
+    </div>
+    <section class="grid"><div class="empty">Loading...</div></section>
+  `;
+  document.getElementById('season-back-loading')?.addEventListener('click', () => {
+    history.pushState({}, '', `/shows/${showId}`);
+    handleLocation();
+  });
+
+  const data = await getShowEpisodesData(showId, seasonNumber, missingOnly, inPlexOnly);
+
+  app.innerHTML = `
+    <div class="topbar">
+      <div class="topbar-left">
+        <button id="season-back" class="back-icon-btn" title="Back to Seasons" aria-label="Back to Seasons">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg>
+        </button>
+        <div class="topbar-title">
+          <h2>${data.show.title} - Season ${seasonNumber}</h2>
+          <div class="meta">${data.items.length} episodes</div>
+        </div>
+      </div>
+      <div class="row">
+        <button id="episodes-missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">Missing</button>
+        <button id="episodes-in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">In Plex</button>
+      </div>
+    </div>
+    <section class="grid" id="show-episodes-grid"></section>
+  `;
+
+  const pushQuery = (params) => {
+    const query = params.toString();
+    history.pushState({}, '', `/shows/${showId}/seasons/${seasonNumber}${query ? `?${query}` : ''}`);
+    renderShowEpisodes(showId, seasonNumber);
+  };
+  document.getElementById('season-back').addEventListener('click', () => {
+    history.pushState({}, '', `/shows/${showId}`);
+    handleLocation();
+  });
+  document.getElementById('episodes-missing-toggle').addEventListener('click', () => {
+    const params = new URLSearchParams();
+    const next = !missingOnly;
+    if (next) params.set('missingOnly', '1');
+    else if (inPlexOnly) params.set('inPlexOnly', '1');
+    pushQuery(params);
+  });
+  document.getElementById('episodes-in-plex-toggle').addEventListener('click', () => {
+    const params = new URLSearchParams();
+    const next = !inPlexOnly;
+    if (next) params.set('inPlexOnly', '1');
+    else if (missingOnly) params.set('missingOnly', '1');
+    pushQuery(params);
+  });
+
+  const grid = document.getElementById('show-episodes-grid');
+  if (!data.items.length) {
+    grid.innerHTML = '<div class="empty">No episodes found.</div>';
+    return;
+  }
+  for (const episode of data.items) {
+    const episodeDownloadUrl = buildDownloadLink(
+      'episode',
+      buildEpisodeKeyword(data.show.title, seasonNumber, episode.episode_number),
+    );
+    const episodeDownloadBadge = episodeDownloadUrl
+      ? `<a class="badge-link badge-overlay badge-download" href="${episodeDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
+      : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>';
+    const card = document.createElement('article');
+    card.className = 'movie-card';
+    card.innerHTML = `
+      <div class="poster-wrap">
+        <img class="poster" src="${withImageCacheKey(episode.poster_url) || SHOW_PLACEHOLDER}" alt="${episode.title}" loading="lazy" />
+        ${
+          episode.in_plex
+            ? `<a class="badge-link badge-overlay" href="${episode.plex_web_url}" target="_blank" rel="noopener noreferrer">In Plex <span class="badge-icon badge-icon-check">✓</span></a>`
+            : episodeDownloadBadge
+        }
+      </div>
+      <div class="caption">
+        <div class="name">E${String(episode.episode_number).padStart(2, '0')} - ${episode.title}</div>
+        <div class="year">${episode.year || 'Unknown year'}</div>
+      </div>
+    `;
+    const badge = card.querySelector('.badge-overlay');
+    if (badge && badge.tagName === 'A') badge.addEventListener('click', (event) => event.stopPropagation());
+    applyImageFallback(card.querySelector('.poster'), SHOW_PLACEHOLDER);
+    grid.appendChild(card);
+  }
 }
 
 async function renderActorDetail(actorId) {
@@ -1021,7 +1805,7 @@ async function renderActorDetail(actorId) {
         : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
       card.innerHTML = `
         <div class="poster-wrap">
-          <img class="poster" src="${movie.poster_url || MOVIE_PLACEHOLDER}" alt="${movie.title}" loading="lazy" />
+          <img class="poster" src="${withImageCacheKey(movie.poster_url) || MOVIE_PLACEHOLDER}" alt="${movie.title}" loading="lazy" />
           ${
             movie.in_plex
               ? `<a class="badge-link badge-overlay" href="${movie.plex_web_url}" target="_blank" rel="noopener noreferrer">In Plex <span class="badge-icon badge-icon-check">✓</span></a>`

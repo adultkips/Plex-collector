@@ -399,3 +399,122 @@ def fetch_movie_library_snapshot(
 
     actors.sort(key=lambda x: (-x['appearances'], x['name']))
     return actors, movies
+
+
+def fetch_show_library_snapshot(
+    server_uri: str,
+    server_token: str,
+    server_client_identifier: str | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    sections_root = _server_get(server_uri, server_token, '/library/sections')
+    show_sections = [
+        s for s in sections_root.findall('Directory') if s.attrib.get('type') == 'show'
+    ]
+
+    shows_by_rating_key: dict[str, dict[str, Any]] = {}
+    episodes: list[dict[str, Any]] = []
+
+    for section in show_sections:
+        section_key = section.attrib.get('key')
+        if not section_key:
+            continue
+
+        shows_root = _server_get(
+            server_uri,
+            server_token,
+            f'/library/sections/{section_key}/all',
+            params={'type': 2, 'includeGuids': 1},
+        )
+        for directory in shows_root.findall('Directory'):
+            title = directory.attrib.get('title')
+            rating_key = directory.attrib.get('ratingKey')
+            if not title or not rating_key:
+                continue
+
+            year_raw = directory.attrib.get('year')
+            year = int(year_raw) if year_raw and year_raw.isdigit() else None
+            tmdb_show_id: int | None = None
+            for guid in directory.findall('Guid'):
+                guid_id = guid.attrib.get('id') or ''
+                if guid_id.startswith('tmdb://'):
+                    raw = guid_id.replace('tmdb://', '', 1)
+                    if raw.isdigit():
+                        tmdb_show_id = int(raw)
+
+            shows_by_rating_key[rating_key] = {
+                'show_id': rating_key,
+                'plex_rating_key': rating_key,
+                'title': title,
+                'year': year,
+                'tmdb_show_id': tmdb_show_id,
+                'normalized_title': normalize_title(title),
+                'image_url': proxied_thumb_url(directory.attrib.get('thumb')),
+            }
+
+        episodes_root = _server_get(
+            server_uri,
+            server_token,
+            f'/library/sections/{section_key}/all',
+            params={'type': 4, 'includeGuids': 1},
+        )
+        for video in episodes_root.findall('Video'):
+            episode_rating_key = video.attrib.get('ratingKey')
+            show_rating_key = video.attrib.get('grandparentRatingKey')
+            if not episode_rating_key or not show_rating_key:
+                continue
+
+            season_raw = video.attrib.get('parentIndex')
+            episode_raw = video.attrib.get('index')
+            if not season_raw or not season_raw.isdigit() or not episode_raw or not episode_raw.isdigit():
+                continue
+
+            title = video.attrib.get('title') or f'Episode {episode_raw}'
+            tmdb_episode_id: int | None = None
+            for guid in video.findall('Guid'):
+                guid_id = guid.attrib.get('id') or ''
+                if guid_id.startswith('tmdb://'):
+                    raw = guid_id.replace('tmdb://', '', 1)
+                    if raw.isdigit():
+                        tmdb_episode_id = int(raw)
+
+            episodes.append(
+                {
+                    'plex_rating_key': episode_rating_key,
+                    'show_id': show_rating_key,
+                    'season_number': int(season_raw),
+                    'episode_number': int(episode_raw),
+                    'title': title,
+                    'normalized_title': normalize_title(title),
+                    'tmdb_episode_id': tmdb_episode_id,
+                    'plex_web_url': (
+                        f'https://app.plex.tv/desktop#!/server/{server_client_identifier}/details?key=%2Flibrary%2Fmetadata%2F{episode_rating_key}'
+                        if server_client_identifier
+                        else None
+                    ),
+                }
+            )
+
+    # Ensure show title data exists for episodes even if /type=2 missed an item.
+    for episode in episodes:
+        show_id = episode['show_id']
+        if show_id in shows_by_rating_key:
+            continue
+        shows_by_rating_key[show_id] = {
+            'show_id': show_id,
+            'plex_rating_key': show_id,
+            'title': f'Show {show_id}',
+            'year': None,
+            'tmdb_show_id': None,
+            'normalized_title': normalize_title(f'Show {show_id}'),
+            'image_url': None,
+        }
+
+    now = datetime.now(UTC).isoformat()
+    shows = []
+    for show in shows_by_rating_key.values():
+        shows.append({**show, 'updated_at': now})
+    for episode in episodes:
+        episode['updated_at'] = now
+
+    shows.sort(key=lambda x: x['title'].lower())
+    return shows, episodes

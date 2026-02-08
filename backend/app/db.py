@@ -45,6 +45,35 @@ def init_db() -> None:
             )
             '''
         )
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS plex_shows (
+                show_id TEXT PRIMARY KEY,
+                plex_rating_key TEXT UNIQUE NOT NULL,
+                title TEXT NOT NULL,
+                year INTEGER,
+                tmdb_show_id INTEGER,
+                normalized_title TEXT NOT NULL,
+                image_url TEXT,
+                updated_at TEXT NOT NULL
+            )
+            '''
+        )
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS plex_show_episodes (
+                plex_rating_key TEXT PRIMARY KEY,
+                show_id TEXT NOT NULL,
+                season_number INTEGER NOT NULL,
+                episode_number INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                normalized_title TEXT NOT NULL,
+                tmdb_episode_id INTEGER,
+                plex_web_url TEXT,
+                updated_at TEXT NOT NULL
+            )
+            '''
+        )
         columns = {row[1] for row in conn.execute("PRAGMA table_info('plex_movies')").fetchall()}
         if 'original_title' not in columns:
             conn.execute('ALTER TABLE plex_movies ADD COLUMN original_title TEXT')
@@ -54,6 +83,18 @@ def init_db() -> None:
             conn.execute('ALTER TABLE plex_movies ADD COLUMN tmdb_id INTEGER')
         if 'imdb_id' not in columns:
             conn.execute('ALTER TABLE plex_movies ADD COLUMN imdb_id TEXT')
+        show_columns = {row[1] for row in conn.execute("PRAGMA table_info('plex_shows')").fetchall()}
+        if 'tmdb_show_id' not in show_columns:
+            conn.execute('ALTER TABLE plex_shows ADD COLUMN tmdb_show_id INTEGER')
+        if 'normalized_title' not in show_columns:
+            conn.execute('ALTER TABLE plex_shows ADD COLUMN normalized_title TEXT')
+        if 'image_url' not in show_columns:
+            conn.execute('ALTER TABLE plex_shows ADD COLUMN image_url TEXT')
+        episode_columns = {row[1] for row in conn.execute("PRAGMA table_info('plex_show_episodes')").fetchall()}
+        if 'tmdb_episode_id' not in episode_columns:
+            conn.execute('ALTER TABLE plex_show_episodes ADD COLUMN tmdb_episode_id INTEGER')
+        if 'plex_web_url' not in episode_columns:
+            conn.execute('ALTER TABLE plex_show_episodes ADD COLUMN plex_web_url TEXT')
         conn.commit()
 
 
