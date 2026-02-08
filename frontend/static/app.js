@@ -942,20 +942,36 @@ function showCreateCollectionModal(message) {
         <div class="scan-spinner"></div>
       </div>
       <div class="scan-modal-msg" id="create-collection-modal-msg">${message}</div>
+      <div class="row" id="create-collection-modal-actions" style="justify-content:center; margin-top: 12px;">
+        <button id="create-collection-modal-ok" class="primary-btn hidden" type="button">OK</button>
+      </div>
     </div>
   `;
   document.body.appendChild(modal);
+  const okBtn = document.getElementById('create-collection-modal-ok');
+  if (okBtn) {
+    okBtn.addEventListener('click', closeCreateCollectionModal);
+  }
 }
 
-function showCreateCollectionSuccessModal(updatedCount) {
+function showCreateCollectionSuccessModal(updatedCount, detail = '') {
   const iconWrap = document.getElementById('create-collection-icon-wrap');
   const msg = document.getElementById('create-collection-modal-msg');
+  const okBtn = document.getElementById('create-collection-modal-ok');
   if (!iconWrap) return;
   iconWrap.innerHTML = '<div class="scan-check">✓</div>';
   if (msg) {
-    msg.textContent = updatedCount > 0
-      ? `Collection updated (${updatedCount})`
-      : 'Collection already up to date';
+    if (updatedCount > 0) {
+      msg.textContent = `Collection updated (${updatedCount})`;
+    } else if (detail) {
+      msg.textContent = detail;
+    } else {
+      msg.textContent = 'Collection already up to date';
+    }
+  }
+  if (okBtn) {
+    okBtn.classList.remove('hidden');
+    okBtn.focus();
   }
 }
 
@@ -1821,13 +1837,12 @@ async function renderActorDetail(actorId) {
         const updated = Number(result.updated || 0);
         const unchanged = Number(result.unchanged || 0);
         const sectionCount = Array.isArray(result.sections) ? result.sections.length : 0;
-        showCreateCollectionSuccessModal(updated);
+        showCreateCollectionSuccessModal(updated, result.detail || '');
         if (sectionCount > 0) {
           createCollectionBtn.title = `${sectionCount} section(s) updated`;
         } else if (unchanged > 0) {
           createCollectionBtn.title = 'No changes needed';
         }
-        window.setTimeout(closeCreateCollectionModal, 700);
       } catch (error) {
         closeCreateCollectionModal();
         window.alert(error.message);
