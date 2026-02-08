@@ -16,7 +16,7 @@ Localhost-only tool for comparing Plex library actors with TMDb movie credits to
 
 ## Screenshots
 ![Profile](screenshots/profile.png)
-![Seasons](screenshots/seasons.png)
+![Actors](screenshots/actors.png)
 ![Movies](screenshots/movies.png)
 ![Shows](screenshots/shows.png)
 ![Seasons](screenshots/seasons.png)
