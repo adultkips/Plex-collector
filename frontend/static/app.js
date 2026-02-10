@@ -48,6 +48,7 @@ const state = {
   showsSortBy: localStorage.getItem('showsSortBy') || 'name',
   showsSortDir: localStorage.getItem('showsSortDir') || 'asc',
   showsMissingOnly: false,
+  showsInPlexOnly: false,
   showsInitialFilter: localStorage.getItem('showsInitialFilter') || 'A',
   showsVisibleCount: ACTORS_BATCH_SIZE,
   showsImageObserver: null,
@@ -1368,6 +1369,9 @@ async function renderShows() {
   }
 
   const hasMissingFlagData = state.shows.some((show) => show.has_missing_episodes !== null && show.has_missing_episodes !== undefined);
+  const hasInPlexFlagData = state.shows.some(
+    (show) => Boolean(show.missing_scan_at) && Number(show.has_missing_episodes) === 0,
+  );
 
   app.innerHTML = `
     <div class="topbar">
@@ -1389,6 +1393,7 @@ async function renderShows() {
         </select>
         <button id="shows-sort-dir" class="toggle-btn" title="Toggle sort direction" aria-label="Toggle sort direction">${state.showsSortDir === 'asc' ? '↑' : '↓'}</button>
         ${hasMissingFlagData || state.showsMissingOnly ? `<button id="shows-missing-episodes-filter" class="toggle-btn ${state.showsMissingOnly ? 'active' : ''}">!</button>` : ''}
+        ${hasInPlexFlagData || state.showsInPlexOnly ? `<button id="shows-in-plex-filter" class="toggle-btn ${state.showsInPlexOnly ? 'active' : ''}">&#10003;</button>` : ''}
       </div>
     </div>
     <div class="alphabet-filter" id="shows-alphabet-filter">
@@ -1428,6 +1433,16 @@ async function renderShows() {
   if (missingFilterBtn) {
     missingFilterBtn.addEventListener('click', () => {
       state.showsMissingOnly = !state.showsMissingOnly;
+      if (state.showsMissingOnly) state.showsInPlexOnly = false;
+      state.showsVisibleCount = ACTORS_BATCH_SIZE;
+      renderShows();
+    });
+  }
+  const inPlexFilterBtn = document.getElementById('shows-in-plex-filter');
+  if (inPlexFilterBtn) {
+    inPlexFilterBtn.addEventListener('click', () => {
+      state.showsInPlexOnly = !state.showsInPlexOnly;
+      if (state.showsInPlexOnly) state.showsMissingOnly = false;
       state.showsVisibleCount = ACTORS_BATCH_SIZE;
       renderShows();
     });
@@ -1450,6 +1465,9 @@ async function renderShows() {
     let scoped = query ? sortedShows.filter((show) => (show.title || '').toLowerCase().includes(query)) : filteredByInitial;
     if (includeMissingFilter && state.showsMissingOnly) {
       scoped = scoped.filter((show) => Number(show.has_missing_episodes) === 1);
+    }
+    if (includeMissingFilter && state.showsInPlexOnly) {
+      scoped = scoped.filter((show) => Boolean(show.missing_scan_at) && Number(show.has_missing_episodes) === 0);
     }
     return scoped;
   };
