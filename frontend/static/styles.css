@@ -25,7 +25,7 @@ a { color: inherit; }
 #app {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 24px 18px 120px;
+  padding: 24px 18px 160px;
 }
 
 body.full-grid-mode #app {
