@@ -117,6 +117,7 @@ def get_tv_show_seasons(tv_id: int) -> list[dict[str, Any]]:
                 'season_number': int(season_number),
                 'name': season.get('name') or f'Season {season_number}',
                 'episode_count': int(season.get('episode_count') or 0),
+                'air_date': season.get('air_date') or None,
                 'poster_url': f'{TMDB_IMAGE_BASE}{poster_path}' if poster_path else None,
             }
         )
@@ -140,6 +141,7 @@ def get_tv_season_episodes(tv_id: int, season_number: int) -> list[dict[str, Any
                 'tmdb_id': episode.get('id'),
                 'episode_number': int(ep_no),
                 'title': episode.get('name') or f'Episode {ep_no}',
+                'air_date': air_date if air_date else None,
                 'year': year,
                 'poster_url': f'{TMDB_IMAGE_BASE}{still_path}' if still_path else None,
             }

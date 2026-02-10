@@ -9,7 +9,7 @@ const SHOW_PLACEHOLDER = 'https://placehold.co/500x750?text=Show';
 const PLEX_LOGO_PATH = '/assets/plexlogo.png';
 const SCAN_ICON_PATH = "M20 5v5h-5l1.9-1.9A6.98 6.98 0 0 0 12 6a7 7 0 0 0-6.93 6h-2.02A9.01 9.01 0 0 1 12 4c2.21 0 4.24.8 5.8 2.12L20 4v1Zm-16 9h5l-1.9 1.9A6.98 6.98 0 0 0 12 18a7 7 0 0 0 6.93-6h2.02A9.01 9.01 0 0 1 12 20c-2.21 0-4.24-.8-5.8-2.12L4 20v-6Z";
 const ACTORS_BATCH_SIZE = 80;
-const ACTOR_INITIAL_FILTERS = ['0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Æ', 'Ø', 'Å', '#'];
+const ACTOR_INITIAL_FILTERS = ['All', '0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Æ', 'Ø', 'Å', '#'];
 const DEFAULT_DOWNLOAD_PREFIX = {
   actor_start: '',
   actor_mode: 'encoded_space',
@@ -43,18 +43,19 @@ const state = {
   showsSearchQuery: '',
   moviesSearchOpen: false,
   moviesSearchQuery: '',
+  moviesInitialFilter: localStorage.getItem('moviesInitialFilter') || 'All',
   actorsSortBy: localStorage.getItem('actorsSortBy') || 'name',
   actorsSortDir: localStorage.getItem('actorsSortDir') || 'asc',
   showsSortBy: localStorage.getItem('showsSortBy') || 'name',
   showsSortDir: localStorage.getItem('showsSortDir') || 'asc',
   showsMissingOnly: false,
   showsInPlexOnly: false,
-  showsInitialFilter: localStorage.getItem('showsInitialFilter') || 'A',
+  showsInitialFilter: localStorage.getItem('showsInitialFilter') || 'All',
   showsVisibleCount: ACTORS_BATCH_SIZE,
   showsImageObserver: null,
   showSeasonsCache: {},
   showEpisodesCache: {},
-  actorsInitialFilter: localStorage.getItem('actorsInitialFilter') || 'A',
+  actorsInitialFilter: localStorage.getItem('actorsInitialFilter') || 'All',
   actorsVisibleCount: ACTORS_BATCH_SIZE,
   actorsImageObserver: null,
   imageCacheKey: localStorage.getItem('imageCacheKey') || '1',
@@ -239,16 +240,61 @@ function formatScanDateOnly(value) {
   return date.toLocaleDateString();
 }
 
+function parseUpcomingAirDates(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.filter((item) => typeof item === 'string' && item.trim());
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((item) => typeof item === 'string' && item.trim());
+      }
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function nextUpcomingAirDate(value) {
+  const dates = parseUpcomingAirDates(value);
+  if (!dates.length) return null;
+  const today = new Date();
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  for (const dateStr of dates) {
+    if (dateStr >= todayKey) return dateStr;
+  }
+  return null;
+}
+
+function formatDateDdMmYyyy(value) {
+  if (!value || typeof value !== 'string') return value;
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return value;
+  const [, year, month, day] = match;
+  return `${day}.${month}.${year}`;
+}
+
+function isTodayOrFutureDate(value) {
+  if (!value || typeof value !== 'string') return false;
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const today = new Date();
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  return value >= todayKey;
+}
+
 function applyShowMissingScanUpdate(updated) {
   if (!updated || !updated.show_id) return;
   const idx = state.shows.findIndex((s) => String(s.show_id) === String(updated.show_id));
   if (idx < 0) return;
   const nextMissing = updated.has_missing_episodes;
-  state.shows[idx] = {
-    ...state.shows[idx],
-    has_missing_episodes: nextMissing === null || nextMissing === undefined ? null : (nextMissing ? 1 : 0),
-    missing_scan_at: updated.missing_scan_at || state.shows[idx].missing_scan_at || null,
-  };
+  const current = state.shows[idx];
+  current.has_missing_episodes = nextMissing === null || nextMissing === undefined ? null : (nextMissing ? 1 : 0);
+  current.missing_scan_at = updated.missing_scan_at || current.missing_scan_at || null;
+  current.missing_upcoming_air_dates = Array.isArray(updated.missing_upcoming_air_dates)
+    ? updated.missing_upcoming_air_dates
+    : (current.missing_upcoming_air_dates || []);
 }
 
 function routeTo(view, actorId = null) {
@@ -1178,7 +1224,7 @@ async function renderActors() {
           return true;
         });
         if (!dynamicFilters.includes(state.actorsInitialFilter)) {
-          state.actorsInitialFilter = 'A';
+          state.actorsInitialFilter = 'All';
           localStorage.setItem('actorsInitialFilter', state.actorsInitialFilter);
         }
         return dynamicFilters
@@ -1219,7 +1265,9 @@ async function renderActors() {
   const renderActorsGrid = () => {
     const query = state.actorsSearchQuery.trim().toLowerCase();
     const isSearching = query.length > 0;
-    const filteredByInitial = sortedActors.filter((actor) => getActorInitialBucket(actor.name) === state.actorsInitialFilter);
+    const filteredByInitial = state.actorsInitialFilter === 'All'
+      ? sortedActors
+      : sortedActors.filter((actor) => getActorInitialBucket(actor.name) === state.actorsInitialFilter);
     const visible = query
       ? sortedActors.filter((actor) => actor.name.toLowerCase().includes(query))
       : filteredByInitial;
@@ -1404,7 +1452,7 @@ async function renderShows() {
           return true;
         });
         if (!dynamicFilters.includes(state.showsInitialFilter)) {
-          state.showsInitialFilter = 'A';
+          state.showsInitialFilter = 'All';
           localStorage.setItem('showsInitialFilter', state.showsInitialFilter);
         }
         return dynamicFilters
@@ -1461,7 +1509,9 @@ async function renderShows() {
 
   const getScopedShows = (includeMissingFilter = true) => {
     const query = state.showsSearchQuery.trim().toLowerCase();
-    const filteredByInitial = sortedShows.filter((show) => getActorInitialBucket(show.title) === state.showsInitialFilter);
+    const filteredByInitial = state.showsInitialFilter === 'All'
+      ? sortedShows
+      : sortedShows.filter((show) => getActorInitialBucket(show.title) === state.showsInitialFilter);
     let scoped = query ? sortedShows.filter((show) => (show.title || '').toLowerCase().includes(query)) : filteredByInitial;
     if (includeMissingFilter && state.showsMissingOnly) {
       scoped = scoped.filter((show) => Number(show.has_missing_episodes) === 1);
@@ -1507,6 +1557,11 @@ async function renderShows() {
       const hasMissing = isScanned && Number(show.has_missing_episodes) === 1;
       const hasNoMissing = isScanned && Number(show.has_missing_episodes) === 0;
       const scanDateText = formatScanDateOnly(show.missing_scan_at);
+      const nextAirDate = nextUpcomingAirDate(show.missing_upcoming_air_dates);
+      const nextAirDateText = nextAirDate ? formatDateDdMmYyyy(nextAirDate) : null;
+      const upcomingLabel = isScanned
+        ? (nextAirDateText ? `New episode: ${nextAirDateText}` : 'No upcoming episodes')
+        : '';
       const showStatusBadge = hasNoMissing && show.plex_web_url
         ? `<a class="badge-link badge-overlay" href="${show.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
         : downloadUrl
@@ -1533,6 +1588,7 @@ async function renderShows() {
         <div class="caption">
           <div class="name">${show.title}</div>
           <div class="count">${show.episodes_in_plex || 0} episodes from Plex</div>
+          ${upcomingLabel ? `<div class="count">${upcomingLabel}</div>` : ''}
         </div>
       `;
       const poster = card.querySelector('.poster');
@@ -1555,7 +1611,7 @@ async function renderShows() {
           const updated = Array.isArray(result.items) ? result.items[0] : null;
           if (updated) applyShowMissingScanUpdate(updated);
           showScanSuccessModal('Missing scan updated for this show.', true);
-          renderShowsGrid();
+          renderShows();
         } catch (error) {
           closeScanModal();
           window.alert(error.message);
@@ -1793,6 +1849,13 @@ async function renderShowSeasons(showId) {
       ? `<a class="badge-link badge-overlay badge-download" href="${seasonDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
       : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>';
     const isMissing = !season.in_plex;
+    const seasonNextUpcoming = season.next_upcoming_air_date ? formatDateDdMmYyyy(season.next_upcoming_air_date) : null;
+    const seasonDateText = season.air_date ? formatDateDdMmYyyy(season.air_date) : null;
+    const seasonReleaseLabel = seasonNextUpcoming
+      ? `New episode: ${seasonNextUpcoming}`
+      : (seasonDateText
+        ? (isTodayOrFutureDate(season.air_date) ? `New episode: ${seasonDateText}` : `Released: ${seasonDateText}`)
+        : '');
     const card = document.createElement('article');
     card.className = `movie-card${isMissing ? ' has-missing' : ''}`;
     card.innerHTML = `
@@ -1808,6 +1871,7 @@ async function renderShowSeasons(showId) {
       <div class="caption">
         <div class="name">${season.name}</div>
         <div class="year">${season.episodes_in_plex || 0}/${season.episode_count || 0} in plex</div>
+        ${seasonReleaseLabel ? `<div class="year">${seasonReleaseLabel}</div>` : ''}
       </div>
     `;
     applyImageFallback(card.querySelector('.poster'), SHOW_PLACEHOLDER);
@@ -1903,6 +1967,10 @@ async function renderShowEpisodes(showId, seasonNumber) {
       ? `<a class="badge-link badge-overlay badge-download" href="${episodeDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
       : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>';
     const isMissing = !episode.in_plex;
+    const episodeDateText = episode.air_date ? formatDateDdMmYyyy(episode.air_date) : null;
+    const episodeReleaseLabel = episodeDateText
+      ? (isTodayOrFutureDate(episode.air_date) ? `Releasing: ${episodeDateText}` : `Released: ${episodeDateText}`)
+      : '';
     const tmdbEpisodeUrl = data.show?.tmdb_show_id
       ? `https://www.themoviedb.org/tv/${data.show.tmdb_show_id}/season/${seasonNumber}/episode/${episode.episode_number}`
       : null;
@@ -1921,7 +1989,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
       </div>
       <div class="caption">
         <div class="name">E${String(episode.episode_number).padStart(2, '0')} - ${episode.title}</div>
-        <div class="year">${episode.year || 'Unknown year'}</div>
+        ${episodeReleaseLabel ? `<div class="year">${episodeReleaseLabel}</div>` : ''}
       </div>
     `;
     const badge = card.querySelector('.badge-overlay');
@@ -1978,6 +2046,22 @@ async function renderActorDetail(actorId) {
         <button id="missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">!</button>
         <button id="in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">✓</button>
       </div>
+    </div>
+    <div class="alphabet-filter" id="movies-alphabet-filter">
+      ${(() => {
+        const initials = new Set(data.items.map((movie) => getActorInitialBucket(movie.title)));
+        const dynamicFilters = ACTOR_INITIAL_FILTERS.filter((key) => {
+          if (['Æ', 'Ø', 'Å'].includes(key)) return initials.has(key);
+          return true;
+        });
+        if (!dynamicFilters.includes(state.moviesInitialFilter)) {
+          state.moviesInitialFilter = 'All';
+          localStorage.setItem('moviesInitialFilter', state.moviesInitialFilter);
+        }
+        return dynamicFilters
+          .map((key) => `<button class="alpha-btn ${state.moviesInitialFilter === key ? 'active' : ''}" data-filter="${key}">${key}</button>`)
+          .join('');
+      })()}
     </div>
     <section class="grid" id="movies-grid"></section>
     ${showCreateCollection ? '<button id="create-collection-btn" class="collection-pill-btn"><span class="btn-plus-icon" aria-hidden="true">+</span><span>Create Collection</span></button>' : ''}
@@ -2070,6 +2154,7 @@ async function renderActorDetail(actorId) {
   }
 
   const grid = document.getElementById('movies-grid');
+  const alphabetFilterEl = document.getElementById('movies-alphabet-filter');
   if (!data.items.length) {
     grid.innerHTML = '<div class="empty">No movies found.</div>';
     return;
@@ -2089,9 +2174,21 @@ async function renderActorDetail(actorId) {
 
   const renderMoviesGrid = () => {
     const query = state.moviesSearchQuery.trim().toLowerCase();
+    const isSearching = query.length > 0;
+    const filteredByInitial = state.moviesInitialFilter === 'All'
+      ? sortedMovies
+      : sortedMovies.filter((movie) => getActorInitialBucket(movie.title) === state.moviesInitialFilter);
     const visible = query
       ? sortedMovies.filter((movie) => (movie.title || '').toLowerCase().includes(query))
-      : sortedMovies;
+      : filteredByInitial;
+
+    for (const button of alphabetFilterEl.querySelectorAll('.alpha-btn')) {
+      button.classList.remove('active');
+      button.disabled = isSearching;
+      if (!isSearching && button.dataset.filter === state.moviesInitialFilter) {
+        button.classList.add('active');
+      }
+    }
 
     grid.innerHTML = '';
     for (const movie of visible) {
@@ -2130,6 +2227,14 @@ async function renderActorDetail(actorId) {
       grid.appendChild(card);
     }
   };
+
+  document.getElementById('movies-alphabet-filter').addEventListener('click', (event) => {
+    const target = event.target.closest('.alpha-btn');
+    if (!target) return;
+    state.moviesInitialFilter = target.dataset.filter;
+    localStorage.setItem('moviesInitialFilter', state.moviesInitialFilter);
+    renderMoviesGrid();
+  });
 
   const moviesSearchControl = document.getElementById('movies-search-control');
   const moviesSearchToggle = document.getElementById('movies-search-toggle');

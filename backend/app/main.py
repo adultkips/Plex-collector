@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import json
 from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any
@@ -291,7 +292,7 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
     with get_conn() as conn:
         existing_rows = conn.execute(
             '''
-            SELECT show_id, tmdb_show_id, has_missing_episodes, missing_scan_at
+            SELECT show_id, tmdb_show_id, has_missing_episodes, missing_scan_at, missing_upcoming_air_dates
             FROM plex_shows
             '''
         ).fetchall()
@@ -308,13 +309,16 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
                 if same_tmdb_match:
                     prepared['has_missing_episodes'] = previous.get('has_missing_episodes')
                     prepared['missing_scan_at'] = previous.get('missing_scan_at')
+                    prepared['missing_upcoming_air_dates'] = previous.get('missing_upcoming_air_dates')
                 else:
                     # TMDb match changed for this show; previous missing-state may be stale.
                     prepared['has_missing_episodes'] = None
                     prepared['missing_scan_at'] = None
+                    prepared['missing_upcoming_air_dates'] = None
             else:
                 prepared['has_missing_episodes'] = None
                 prepared['missing_scan_at'] = None
+                prepared['missing_upcoming_air_dates'] = None
             prepared_shows.append(prepared)
 
         conn.execute('DELETE FROM plex_shows')
@@ -332,6 +336,7 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
                 plex_web_url,
                 has_missing_episodes,
                 missing_scan_at,
+                missing_upcoming_air_dates,
                 updated_at
             )
             VALUES(
@@ -345,6 +350,7 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
                 :plex_web_url,
                 :has_missing_episodes,
                 :missing_scan_at,
+                :missing_upcoming_air_dates,
                 :updated_at
             )
             ''',
@@ -773,7 +779,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
 
     now_iso = datetime.now(UTC).isoformat()
     results: list[dict[str, Any]] = []
-    updates: list[tuple[int, str, str, str]] = []
+    updates: list[tuple[int, str, str | None, str, str]] = []
     missing_total = 0
     failed_total = 0
     scanned_total = 0
@@ -788,6 +794,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
                     'has_missing_episodes': None,
                     'missing_episode_count': None,
                     'missing_scan_at': None,
+                    'missing_upcoming_air_dates': [],
                     'error': 'Show not found in local cache',
                 }
             )
@@ -805,6 +812,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
                             'has_missing_episodes': None,
                             'missing_episode_count': None,
                             'missing_scan_at': None,
+                            'missing_upcoming_air_dates': [],
                             'error': 'TMDb match not found',
                         }
                     )
@@ -836,6 +844,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
             }
 
             tmdb_episode_set: set[tuple[int, int]] = set()
+            tmdb_episode_air_dates: dict[tuple[int, int], str] = {}
             seasons = get_tv_show_seasons(int(tmdb_show_id))
             for season in seasons:
                 season_number = int(season.get('season_number') or 0)
@@ -846,19 +855,32 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
                     episode_number = int(episode.get('episode_number') or 0)
                     if episode_number <= 0:
                         continue
-                    tmdb_episode_set.add((season_number, episode_number))
+                    key = (season_number, episode_number)
+                    tmdb_episode_set.add(key)
+                    air_date = str(episode.get('air_date') or '').strip()
+                    if air_date:
+                        tmdb_episode_air_dates[key] = air_date
 
-            missing_episode_count = len(tmdb_episode_set - plex_episode_set)
+            missing_episode_keys = tmdb_episode_set - plex_episode_set
+            missing_episode_count = len(missing_episode_keys)
             has_missing = 1 if missing_episode_count > 0 else 0
             if has_missing:
                 missing_total += 1
-            updates.append((has_missing, now_iso, now_iso, show_id))
+            upcoming_air_dates = sorted(
+                {
+                    tmdb_episode_air_dates[key]
+                    for key in missing_episode_keys
+                    if key in tmdb_episode_air_dates
+                }
+            )
+            updates.append((has_missing, now_iso, json.dumps(upcoming_air_dates), now_iso, show_id))
             results.append(
                 {
                     'show_id': show_id,
                     'has_missing_episodes': bool(has_missing),
                     'missing_episode_count': missing_episode_count,
                     'missing_scan_at': now_iso,
+                    'missing_upcoming_air_dates': upcoming_air_dates,
                     'error': None,
                 }
             )
@@ -872,6 +894,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
                     'has_missing_episodes': None,
                     'missing_episode_count': None,
                     'missing_scan_at': None,
+                    'missing_upcoming_air_dates': [],
                     'error': str(exc),
                 }
             )
@@ -881,7 +904,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
             conn.executemany(
                 '''
                 UPDATE plex_shows
-                SET has_missing_episodes = ?, missing_scan_at = ?, updated_at = ?
+                SET has_missing_episodes = ?, missing_scan_at = ?, missing_upcoming_air_dates = ?, updated_at = ?
                 WHERE show_id = ?
                 ''',
                 updates,
@@ -1106,11 +1129,12 @@ def shows() -> dict[str, Any]:
                 s.plex_web_url,
                 s.has_missing_episodes,
                 s.missing_scan_at,
+                s.missing_upcoming_air_dates,
                 s.updated_at,
                 COUNT(e.plex_rating_key) AS episodes_in_plex
             FROM plex_shows s
             LEFT JOIN plex_show_episodes e ON e.show_id = s.show_id
-            GROUP BY s.show_id, s.title, s.year, s.image_url, s.plex_web_url, s.has_missing_episodes, s.missing_scan_at, s.updated_at
+            GROUP BY s.show_id, s.title, s.year, s.image_url, s.plex_web_url, s.has_missing_episodes, s.missing_scan_at, s.missing_upcoming_air_dates, s.updated_at
             ORDER BY episodes_in_plex DESC, s.title ASC
             '''
         ).fetchall()
@@ -1126,6 +1150,7 @@ def show_seasons(
     missing_only: bool = Query(False),
     in_plex_only: bool = Query(False),
 ) -> dict[str, Any]:
+    today = datetime.now(UTC).date().isoformat()
     with get_conn() as conn:
         show = conn.execute(
             '''
@@ -1174,10 +1199,26 @@ def show_seasons(
         plex_eps = plex_by_season.get(season_no, set())
         total_eps = int(season.get('episode_count') or 0)
         in_plex_complete = total_eps > 0 and len(plex_eps) >= total_eps
+        next_upcoming_air_date: str | None = None
+        if not in_plex_complete:
+            try:
+                season_episodes = get_tv_season_episodes(int(show_data['tmdb_show_id']), season_no)
+            except TMDbNotConfiguredError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            upcoming_dates = [
+                str(ep.get('air_date'))
+                for ep in season_episodes
+                if ep.get('air_date')
+                and int(ep.get('episode_number') or 0) not in plex_eps
+                and str(ep.get('air_date')) >= today
+            ]
+            if upcoming_dates:
+                next_upcoming_air_date = min(upcoming_dates)
         item = {
             **season,
             'in_plex': in_plex_complete,
             'episodes_in_plex': len(plex_eps),
+            'next_upcoming_air_date': next_upcoming_air_date,
         }
         include = True
         if missing_only and item['in_plex']:
