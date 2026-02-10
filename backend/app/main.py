@@ -787,6 +787,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
                     'show_id': show_id,
                     'has_missing_episodes': None,
                     'missing_episode_count': None,
+                    'missing_scan_at': None,
                     'error': 'Show not found in local cache',
                 }
             )
@@ -803,6 +804,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
                             'show_id': show_id,
                             'has_missing_episodes': None,
                             'missing_episode_count': None,
+                            'missing_scan_at': None,
                             'error': 'TMDb match not found',
                         }
                     )
@@ -856,6 +858,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
                     'show_id': show_id,
                     'has_missing_episodes': bool(has_missing),
                     'missing_episode_count': missing_episode_count,
+                    'missing_scan_at': now_iso,
                     'error': None,
                 }
             )
@@ -868,6 +871,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
                     'show_id': show_id,
                     'has_missing_episodes': None,
                     'missing_episode_count': None,
+                    'missing_scan_at': None,
                     'error': str(exc),
                 }
             )

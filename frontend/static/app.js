@@ -7,6 +7,7 @@ const ACTOR_PLACEHOLDER = 'https://placehold.co/500x750?text=Actor';
 const MOVIE_PLACEHOLDER = 'https://placehold.co/500x750?text=Movie';
 const SHOW_PLACEHOLDER = 'https://placehold.co/500x750?text=Show';
 const PLEX_LOGO_PATH = '/assets/plexlogo.png';
+const SCAN_ICON_PATH = "M20 5v5h-5l1.9-1.9A6.98 6.98 0 0 0 12 6a7 7 0 0 0-6.93 6h-2.02A9.01 9.01 0 0 1 12 4c2.21 0 4.24.8 5.8 2.12L20 4v1Zm-16 9h5l-1.9 1.9A6.98 6.98 0 0 0 12 18a7 7 0 0 0 6.93-6h2.02A9.01 9.01 0 0 1 12 20c-2.21 0-4.24-.8-5.8-2.12L4 20v-6Z";
 const ACTORS_BATCH_SIZE = 80;
 const ACTOR_INITIAL_FILTERS = ['0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Æ', 'Ø', 'Å', '#'];
 const DEFAULT_DOWNLOAD_PREFIX = {
@@ -116,6 +117,16 @@ function plexLogoTag(className = 'badge-logo') {
   return `<img src="${logoUrl}" alt="Plex" class="${className}" loading="lazy" onerror="this.style.display='none'" />`;
 }
 
+function scanIconTag(iconClass = 'btn-scan-icon') {
+  return `
+    <span class="${iconClass}" aria-hidden="true">
+      <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+        <path d="${SCAN_ICON_PATH}"></path>
+      </svg>
+    </span>
+  `;
+}
+
 function invalidateImageCache() {
   state.imageCacheKey = String(Date.now());
   localStorage.setItem('imageCacheKey', state.imageCacheKey);
@@ -218,6 +229,25 @@ function compareActorNames(a, b) {
   if (aName < bName) return -1;
   if (aName > bName) return 1;
   return (a?.name || '').localeCompare(b?.name || '', 'en', { sensitivity: 'base' });
+}
+
+function formatScanDateOnly(value) {
+  if (!value) return 'Not scanned';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Not scanned';
+  return date.toLocaleDateString();
+}
+
+function applyShowMissingScanUpdate(updated) {
+  if (!updated || !updated.show_id) return;
+  const idx = state.shows.findIndex((s) => String(s.show_id) === String(updated.show_id));
+  if (idx < 0) return;
+  const nextMissing = updated.has_missing_episodes;
+  state.shows[idx] = {
+    ...state.shows[idx],
+    has_missing_episodes: nextMissing === null || nextMissing === undefined ? null : (nextMissing ? 1 : 0),
+    missing_scan_at: updated.missing_scan_at || state.shows[idx].missing_scan_at || null,
+  };
 }
 
 function routeTo(view, actorId = null) {
@@ -577,8 +607,8 @@ async function renderProfile() {
         <h3>Library Sync</h3>
         <p class="subtitle">Scan Plex libraries.</p>
         <div class="row library-sync-actions">
-          <button id="scan-btn" class="primary-btn">Scan Actors</button>
-          <button id="scan-shows-btn" class="primary-btn">Scan Shows</button>
+          <button id="scan-btn" class="primary-btn btn-with-icon">${scanIconTag()}<span>Scan Actors</span></button>
+          <button id="scan-shows-btn" class="primary-btn btn-with-icon">${scanIconTag()}<span>Scan Shows</span></button>
           <span id="scan-status" class="meta"></span>
           <span id="scan-shows-status" class="meta"></span>
         </div>
@@ -1379,7 +1409,7 @@ async function renderShows() {
     </div>
     <section class="grid" id="shows-grid"></section>
     <div class="load-more-wrap" id="shows-load-more-wrap"></div>
-    <button id="shows-scan-missing-btn" class="collection-pill-btn">Scan epsiodes</button>
+    <button id="shows-scan-missing-btn" class="collection-pill-btn btn-with-icon">${scanIconTag()}<span>Scan Episodes</span></button>
   `;
 
   document.getElementById('shows-sort-by').addEventListener('change', (event) => {
@@ -1455,8 +1485,10 @@ async function renderShows() {
     grid.innerHTML = '';
     for (const show of renderItems) {
       const downloadUrl = buildDownloadLink('show', show.title);
-      const hasMissing = Number(show.has_missing_episodes) === 1;
-      const hasNoMissing = Number(show.has_missing_episodes) === 0;
+      const isScanned = Boolean(show.missing_scan_at);
+      const hasMissing = isScanned && Number(show.has_missing_episodes) === 1;
+      const hasNoMissing = isScanned && Number(show.has_missing_episodes) === 0;
+      const scanDateText = formatScanDateOnly(show.missing_scan_at);
       const showStatusBadge = hasNoMissing && show.plex_web_url
         ? `<a class="badge-link badge-overlay" href="${show.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
         : downloadUrl
@@ -1467,6 +1499,14 @@ async function renderShows() {
       card.className = `actor-card${hasMissing ? ' has-missing' : ''}`;
       card.innerHTML = `
         <div class="poster-wrap">
+          <button class="show-scan-pill" type="button" data-show-id="${show.show_id}" title="Scan episodes for this show" aria-label="Scan episodes for this show">
+            <span class="show-scan-pill-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+                <path d="${SCAN_ICON_PATH}"></path>
+              </svg>
+            </span>
+            <span class="show-scan-pill-text">${scanDateText}</span>
+          </button>
           <img class="poster show-poster-lazy" src="${SHOW_PLACEHOLDER}" data-src="${showImage}" alt="${show.title}" loading="lazy" />
           ${hasMissing ? '<span class="missing-badge" title="Missing episodes" aria-label="Missing episodes">!</span>' : ''}
           ${hasNoMissing ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
@@ -1483,6 +1523,28 @@ async function renderShows() {
       else poster.src = showImage;
       const downloadLink = card.querySelector('.badge-link');
       downloadLink.addEventListener('click', (event) => event.stopPropagation());
+      const scanPillBtn = card.querySelector('.show-scan-pill');
+      scanPillBtn.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        if (scanPillBtn.disabled) return;
+        scanPillBtn.disabled = true;
+        showScanModal('Scanned 0/1 shows');
+        try {
+          const result = await api('/api/shows/missing-scan', {
+            method: 'POST',
+            body: JSON.stringify({ show_ids: [String(show.show_id)] }),
+          });
+          const updated = Array.isArray(result.items) ? result.items[0] : null;
+          if (updated) applyShowMissingScanUpdate(updated);
+          showScanSuccessModal('Missing scan updated for this show.', true);
+          renderShowsGrid();
+        } catch (error) {
+          closeScanModal();
+          window.alert(error.message);
+        } finally {
+          scanPillBtn.disabled = false;
+        }
+      });
       card.addEventListener('click', () => routeTo('show-detail', show.show_id));
       grid.appendChild(card);
     }
@@ -1579,20 +1641,13 @@ async function renderShows() {
             if (!updated) continue;
             if (updated.has_missing_episodes === true) missing += 1;
             if (updated.has_missing_episodes === null || updated.has_missing_episodes === undefined) failed += 1;
-            const idx = state.shows.findIndex((s) => String(s.show_id) === String(updated.show_id));
-            if (idx >= 0) {
-              state.shows[idx] = {
-                ...state.shows[idx],
-                has_missing_episodes: updated.has_missing_episodes ? 1 : 0,
-                missing_scan_at: updated.missing_scan_at || new Date().toISOString(),
-              };
-            }
+            applyShowMissingScanUpdate(updated);
           }
           scanned += 1;
           const msg = document.getElementById('scan-modal-msg');
           if (msg) msg.textContent = `Scanned ${scanned}/${total} shows`;
         }
-        showScanSuccessModal(`Done. Missing: ${missing}, Failed: ${failed}`, true);
+        showScanSuccessModal(`Missing: ${missing}, Failed: ${failed}`, true);
         state.showsLoaded = true;
         renderShows();
       } catch (error) {
@@ -1907,7 +1962,7 @@ async function renderActorDetail(actorId) {
       </div>
     </div>
     <section class="grid" id="movies-grid"></section>
-    ${showCreateCollection ? '<button id="create-collection-btn" class="collection-pill-btn">Create Collection</button>' : ''}
+    ${showCreateCollection ? '<button id="create-collection-btn" class="collection-pill-btn"><span class="btn-plus-icon" aria-hidden="true">+</span><span>Create Collection</span></button>' : ''}
   `;
 
   document.getElementById('actor-detail-back').addEventListener('click', () => {
