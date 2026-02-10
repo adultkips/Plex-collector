@@ -15,7 +15,7 @@ Localhost-only tool for comparing Plex library actors with TMDb movie credits to
 - Actor page with TMDb movies grid (incl. `Missing` / `In Plex` filters)
 - `Create Collection` in Plex from actor movie view.
 - Shows grid from Plex shows library
-- `Scan for missing episodes` on Shows page (filtered scope).
+- `Scan episodes` on Shows page.
 - Show -> Season -> Episode flow with `Missing` / `In Plex` filters
 - `Download Prefix` settings for `Actors`, `Movies`, `Shows`, `Seasons`, and `Episodes`
 - Clickable `Plex` and `Download` badges on cards

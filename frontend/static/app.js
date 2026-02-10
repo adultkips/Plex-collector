@@ -949,6 +949,34 @@ function closeScanModal() {
   if (modal) modal.remove();
 }
 
+function chooseShowMissingScanMode(scopedCount, allCount) {
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.className = 'scan-modal';
+    modal.id = 'scan-choice-modal';
+    modal.innerHTML = `
+      <div class="scan-modal-card card">
+        <div class="scan-modal-msg">Choose scan scope</div>
+        <div class="row" style="justify-content:center; gap: 10px; margin-top: 14px; flex-direction: column; align-items: center;">
+          <button id="scan-choice-scoped" class="primary-btn" type="button" style="min-width: 170px;">Scan (${scopedCount})</button>
+          <button id="scan-choice-all" class="secondary-btn" type="button" style="min-width: 170px;">Scan All (${allCount})</button>
+          <button id="scan-choice-cancel" class="toggle-btn" type="button" style="margin-top: 14px; min-width: 170px;">Cancel</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    const close = (choice) => {
+      modal.remove();
+      resolve(choice);
+    };
+
+    document.getElementById('scan-choice-scoped')?.addEventListener('click', () => close('scoped'));
+    document.getElementById('scan-choice-all')?.addEventListener('click', () => close('all'));
+    document.getElementById('scan-choice-cancel')?.addEventListener('click', () => close(null));
+  });
+}
+
 function showCreateCollectionModal(message) {
   const modal = document.createElement('div');
   modal.className = 'scan-modal';
@@ -1351,7 +1379,7 @@ async function renderShows() {
     </div>
     <section class="grid" id="shows-grid"></section>
     <div class="load-more-wrap" id="shows-load-more-wrap"></div>
-    <button id="shows-scan-missing-btn" class="collection-pill-btn">Scan for missing episodes</button>
+    <button id="shows-scan-missing-btn" class="collection-pill-btn">Scan epsiodes</button>
   `;
 
   document.getElementById('shows-sort-by').addEventListener('change', (event) => {
@@ -1521,7 +1549,15 @@ async function renderShows() {
     scanMissingBtn.addEventListener('click', async () => {
       if (scanMissingBtn.disabled) return;
       const scoped = getScopedShows(false);
-      const showIds = scoped.map((item) => String(item.show_id)).filter(Boolean);
+      const scopedIds = scoped.map((item) => String(item.show_id)).filter(Boolean);
+      const allIds = state.shows.map((item) => String(item.show_id)).filter(Boolean);
+      if (!allIds.length) {
+        window.alert('No shows available in current filter.');
+        return;
+      }
+      const choice = await chooseShowMissingScanMode(scopedIds.length, allIds.length);
+      if (!choice) return;
+      const showIds = choice === 'all' ? allIds : scopedIds;
       if (!showIds.length) {
         window.alert('No shows available in current filter.');
         return;
