@@ -56,6 +56,9 @@ def init_db() -> None:
                 tmdb_show_id INTEGER,
                 normalized_title TEXT NOT NULL,
                 image_url TEXT,
+                plex_web_url TEXT,
+                has_missing_episodes INTEGER,
+                missing_scan_at TEXT,
                 updated_at TEXT NOT NULL
             )
             '''
@@ -93,6 +96,12 @@ def init_db() -> None:
             conn.execute('ALTER TABLE plex_shows ADD COLUMN normalized_title TEXT')
         if 'image_url' not in show_columns:
             conn.execute('ALTER TABLE plex_shows ADD COLUMN image_url TEXT')
+        if 'plex_web_url' not in show_columns:
+            conn.execute('ALTER TABLE plex_shows ADD COLUMN plex_web_url TEXT')
+        if 'has_missing_episodes' not in show_columns:
+            conn.execute('ALTER TABLE plex_shows ADD COLUMN has_missing_episodes INTEGER')
+        if 'missing_scan_at' not in show_columns:
+            conn.execute('ALTER TABLE plex_shows ADD COLUMN missing_scan_at TEXT')
         episode_columns = {row[1] for row in conn.execute("PRAGMA table_info('plex_show_episodes')").fetchall()}
         if 'tmdb_episode_id' not in episode_columns:
             conn.execute('ALTER TABLE plex_show_episodes ADD COLUMN tmdb_episode_id INTEGER')

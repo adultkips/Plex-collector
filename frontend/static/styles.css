@@ -257,6 +257,11 @@ select.secondary-btn {
   box-shadow: 0 14px 24px rgba(0, 0, 0, 0.28);
 }
 
+.actor-card.has-missing {
+  border-color: #b91c1c;
+  box-shadow: 0 0 0 1px rgba(185, 28, 28, 0.28);
+}
+
 .movie-card {
   cursor: pointer;
   transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
@@ -266,6 +271,11 @@ select.secondary-btn {
   transform: scale(1.02);
   border-color: #42506a;
   box-shadow: 0 14px 24px rgba(0, 0, 0, 0.28);
+}
+
+.movie-card.has-missing {
+  border-color: #b91c1c;
+  box-shadow: 0 0 0 1px rgba(185, 28, 28, 0.28);
 }
 
 .poster {
@@ -432,6 +442,54 @@ select.secondary-btn {
   bottom: 10px;
   transform: translateX(-50%);
   margin-top: 0;
+}
+
+.badge-logo {
+  width: 15px;
+  height: 15px;
+  object-fit: contain;
+  vertical-align: -2.5px;
+  margin-left: 2px;
+}
+
+.missing-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #ffffff;
+  font-weight: 900;
+  font-size: 15px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  border: 1px solid #ef4444;
+  box-shadow: 0 6px 16px rgba(127, 29, 29, 0.45);
+  z-index: 2;
+  pointer-events: none;
+}
+
+.in-plex-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: #16a34a;
+  color: #ffffff;
+  font-weight: 900;
+  font-size: 14px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  border: 1px solid #22c55e;
+  box-shadow: 0 6px 16px rgba(20, 83, 45, 0.45);
+  z-index: 2;
+  pointer-events: none;
 }
 
 .empty {

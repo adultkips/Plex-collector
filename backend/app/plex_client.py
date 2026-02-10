@@ -565,6 +565,11 @@ def fetch_show_library_snapshot(
                 'tmdb_show_id': tmdb_show_id,
                 'normalized_title': normalize_title(title),
                 'image_url': proxied_thumb_url(directory.attrib.get('thumb')),
+                'plex_web_url': (
+                    f'https://app.plex.tv/desktop#!/server/{server_client_identifier}/details?key=%2Flibrary%2Fmetadata%2F{rating_key}'
+                    if server_client_identifier
+                    else None
+                ),
             }
 
         episodes_root = _server_get(
@@ -623,6 +628,11 @@ def fetch_show_library_snapshot(
             'tmdb_show_id': None,
             'normalized_title': normalize_title(f'Show {show_id}'),
             'image_url': None,
+            'plex_web_url': (
+                f'https://app.plex.tv/desktop#!/server/{server_client_identifier}/details?key=%2Flibrary%2Fmetadata%2F{show_id}'
+                if server_client_identifier
+                else None
+            ),
         }
 
     now = datetime.now(UTC).isoformat()

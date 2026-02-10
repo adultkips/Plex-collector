@@ -90,6 +90,10 @@ class CreateCollectionPayload(BaseModel):
     collection_name: str | None = None
 
 
+class ShowMissingScanPayload(BaseModel):
+    show_ids: list[str]
+
+
 DEFAULT_DOWNLOAD_PREFIX = {
     'actor_start': '',
     'actor_mode': 'encoded_space',
@@ -297,6 +301,7 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
                 tmdb_show_id,
                 normalized_title,
                 image_url,
+                plex_web_url,
                 updated_at
             )
             VALUES(
@@ -307,6 +312,7 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
                 :tmdb_show_id,
                 :normalized_title,
                 :image_url,
+                :plex_web_url,
                 :updated_at
             )
             ''',
@@ -714,6 +720,147 @@ def scan_shows() -> dict[str, Any]:
     }
 
 
+@app.post('/api/shows/missing-scan')
+def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
+    show_ids = [str(sid).strip() for sid in payload.show_ids if str(sid).strip()]
+    if not show_ids:
+        raise HTTPException(status_code=400, detail='No shows selected for missing scan')
+    unique_show_ids = list(dict.fromkeys(show_ids))
+
+    with get_conn() as conn:
+        placeholders = ','.join('?' for _ in unique_show_ids)
+        show_rows = conn.execute(
+            f'''
+            SELECT show_id, title, year, tmdb_show_id
+            FROM plex_shows
+            WHERE show_id IN ({placeholders})
+            ''',
+            unique_show_ids,
+        ).fetchall()
+        shows_by_id = {str(row['show_id']): dict(row) for row in show_rows}
+
+    now_iso = datetime.now(UTC).isoformat()
+    results: list[dict[str, Any]] = []
+    updates: list[tuple[int, str, str, str]] = []
+    missing_total = 0
+    failed_total = 0
+    scanned_total = 0
+
+    for show_id in unique_show_ids:
+        show = shows_by_id.get(show_id)
+        if not show:
+            failed_total += 1
+            results.append(
+                {
+                    'show_id': show_id,
+                    'has_missing_episodes': None,
+                    'missing_episode_count': None,
+                    'error': 'Show not found in local cache',
+                }
+            )
+            continue
+        scanned_total += 1
+        try:
+            tmdb_show_id = show.get('tmdb_show_id')
+            if not tmdb_show_id:
+                found = search_tv_show(show.get('title') or '', show.get('year'))
+                if not found:
+                    failed_total += 1
+                    results.append(
+                        {
+                            'show_id': show_id,
+                            'has_missing_episodes': None,
+                            'missing_episode_count': None,
+                            'error': 'TMDb match not found',
+                        }
+                    )
+                    continue
+                tmdb_show_id = int(found['id'])
+                with get_conn() as conn:
+                    conn.execute(
+                        'UPDATE plex_shows SET tmdb_show_id = ?, updated_at = ? WHERE show_id = ?',
+                        (tmdb_show_id, now_iso, show_id),
+                    )
+                    conn.commit()
+
+            with get_conn() as conn:
+                plex_episode_rows = conn.execute(
+                    '''
+                    SELECT season_number, episode_number
+                    FROM plex_show_episodes
+                    WHERE show_id = ?
+                    ''',
+                    (show_id,),
+                ).fetchall()
+            plex_episode_set = {
+                (int(row['season_number']), int(row['episode_number']))
+                for row in plex_episode_rows
+                if row['season_number'] is not None
+                and row['episode_number'] is not None
+                and int(row['season_number']) > 0
+                and int(row['episode_number']) > 0
+            }
+
+            tmdb_episode_set: set[tuple[int, int]] = set()
+            seasons = get_tv_show_seasons(int(tmdb_show_id))
+            for season in seasons:
+                season_number = int(season.get('season_number') or 0)
+                if season_number <= 0:
+                    continue
+                episodes = get_tv_season_episodes(int(tmdb_show_id), season_number)
+                for episode in episodes:
+                    episode_number = int(episode.get('episode_number') or 0)
+                    if episode_number <= 0:
+                        continue
+                    tmdb_episode_set.add((season_number, episode_number))
+
+            missing_episode_count = len(tmdb_episode_set - plex_episode_set)
+            has_missing = 1 if missing_episode_count > 0 else 0
+            if has_missing:
+                missing_total += 1
+            updates.append((has_missing, now_iso, now_iso, show_id))
+            results.append(
+                {
+                    'show_id': show_id,
+                    'has_missing_episodes': bool(has_missing),
+                    'missing_episode_count': missing_episode_count,
+                    'error': None,
+                }
+            )
+        except TMDbNotConfiguredError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            failed_total += 1
+            results.append(
+                {
+                    'show_id': show_id,
+                    'has_missing_episodes': None,
+                    'missing_episode_count': None,
+                    'error': str(exc),
+                }
+            )
+
+    if updates:
+        with get_conn() as conn:
+            conn.executemany(
+                '''
+                UPDATE plex_shows
+                SET has_missing_episodes = ?, missing_scan_at = ?, updated_at = ?
+                WHERE show_id = ?
+                ''',
+                updates,
+            )
+            conn.commit()
+
+    return {
+        'ok': True,
+        'scanned': scanned_total,
+        'failed': failed_total,
+        'missing_shows': missing_total,
+        'items': results,
+    }
+
+
 @app.get('/api/plex/image')
 def plex_image(thumb: str = Query(...)) -> Response:
     _, server = ensure_auth()
@@ -920,11 +1067,14 @@ def shows() -> dict[str, Any]:
                 s.title,
                 s.year,
                 s.image_url,
+                s.plex_web_url,
+                s.has_missing_episodes,
+                s.missing_scan_at,
                 s.updated_at,
                 COUNT(e.plex_rating_key) AS episodes_in_plex
             FROM plex_shows s
             LEFT JOIN plex_show_episodes e ON e.show_id = s.show_id
-            GROUP BY s.show_id, s.title, s.year, s.image_url, s.updated_at
+            GROUP BY s.show_id, s.title, s.year, s.image_url, s.plex_web_url, s.has_missing_episodes, s.missing_scan_at, s.updated_at
             ORDER BY episodes_in_plex DESC, s.title ASC
             '''
         ).fetchall()
@@ -986,9 +1136,11 @@ def show_seasons(
     for season in seasons:
         season_no = int(season['season_number'])
         plex_eps = plex_by_season.get(season_no, set())
+        total_eps = int(season.get('episode_count') or 0)
+        in_plex_complete = total_eps > 0 and len(plex_eps) >= total_eps
         item = {
             **season,
-            'in_plex': bool(plex_eps),
+            'in_plex': in_plex_complete,
             'episodes_in_plex': len(plex_eps),
         }
         include = True
