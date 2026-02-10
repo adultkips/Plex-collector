@@ -50,6 +50,7 @@ const state = {
   showsSortDir: localStorage.getItem('showsSortDir') || 'asc',
   showsMissingOnly: false,
   showsInPlexOnly: false,
+  showsNewOnly: false,
   showsInitialFilter: localStorage.getItem('showsInitialFilter') || 'All',
   showsVisibleCount: ACTORS_BATCH_SIZE,
   showsImageObserver: null,
@@ -1420,6 +1421,7 @@ async function renderShows() {
   const hasInPlexFlagData = state.shows.some(
     (show) => Boolean(show.missing_scan_at) && Number(show.has_missing_episodes) === 0,
   );
+  const hasNewData = state.shows.some((show) => Boolean(nextUpcomingAirDate(show.missing_upcoming_air_dates)));
 
   app.innerHTML = `
     <div class="topbar">
@@ -1442,6 +1444,7 @@ async function renderShows() {
         <button id="shows-sort-dir" class="toggle-btn" title="Toggle sort direction" aria-label="Toggle sort direction">${state.showsSortDir === 'asc' ? '↑' : '↓'}</button>
         ${hasMissingFlagData || state.showsMissingOnly ? `<button id="shows-missing-episodes-filter" class="toggle-btn ${state.showsMissingOnly ? 'active' : ''}">!</button>` : ''}
         ${hasInPlexFlagData || state.showsInPlexOnly ? `<button id="shows-in-plex-filter" class="toggle-btn ${state.showsInPlexOnly ? 'active' : ''}">&#10003;</button>` : ''}
+        ${hasNewData || state.showsNewOnly ? `<button id="shows-new-filter" class="toggle-btn ${state.showsNewOnly ? 'active' : ''}">NEW</button>` : ''}
       </div>
     </div>
     <div class="alphabet-filter" id="shows-alphabet-filter">
@@ -1481,7 +1484,10 @@ async function renderShows() {
   if (missingFilterBtn) {
     missingFilterBtn.addEventListener('click', () => {
       state.showsMissingOnly = !state.showsMissingOnly;
-      if (state.showsMissingOnly) state.showsInPlexOnly = false;
+      if (state.showsMissingOnly) {
+        state.showsInPlexOnly = false;
+        state.showsNewOnly = false;
+      }
       state.showsVisibleCount = ACTORS_BATCH_SIZE;
       renderShows();
     });
@@ -1490,7 +1496,22 @@ async function renderShows() {
   if (inPlexFilterBtn) {
     inPlexFilterBtn.addEventListener('click', () => {
       state.showsInPlexOnly = !state.showsInPlexOnly;
-      if (state.showsInPlexOnly) state.showsMissingOnly = false;
+      if (state.showsInPlexOnly) {
+        state.showsMissingOnly = false;
+        state.showsNewOnly = false;
+      }
+      state.showsVisibleCount = ACTORS_BATCH_SIZE;
+      renderShows();
+    });
+  }
+  const newFilterBtn = document.getElementById('shows-new-filter');
+  if (newFilterBtn) {
+    newFilterBtn.addEventListener('click', () => {
+      state.showsNewOnly = !state.showsNewOnly;
+      if (state.showsNewOnly) {
+        state.showsMissingOnly = false;
+        state.showsInPlexOnly = false;
+      }
       state.showsVisibleCount = ACTORS_BATCH_SIZE;
       renderShows();
     });
@@ -1514,10 +1535,15 @@ async function renderShows() {
       : sortedShows.filter((show) => getActorInitialBucket(show.title) === state.showsInitialFilter);
     let scoped = query ? sortedShows.filter((show) => (show.title || '').toLowerCase().includes(query)) : filteredByInitial;
     if (includeMissingFilter && state.showsMissingOnly) {
-      scoped = scoped.filter((show) => Number(show.has_missing_episodes) === 1);
+      scoped = scoped.filter(
+        (show) => Number(show.has_missing_episodes) === 1 && !nextUpcomingAirDate(show.missing_upcoming_air_dates),
+      );
     }
     if (includeMissingFilter && state.showsInPlexOnly) {
       scoped = scoped.filter((show) => Boolean(show.missing_scan_at) && Number(show.has_missing_episodes) === 0);
+    }
+    if (includeMissingFilter && state.showsNewOnly) {
+      scoped = scoped.filter((show) => Boolean(nextUpcomingAirDate(show.missing_upcoming_air_dates)));
     }
     return scoped;
   };
@@ -1559,6 +1585,7 @@ async function renderShows() {
       const scanDateText = formatScanDateOnly(show.missing_scan_at);
       const nextAirDate = nextUpcomingAirDate(show.missing_upcoming_air_dates);
       const nextAirDateText = nextAirDate ? formatDateDdMmYyyy(nextAirDate) : null;
+      const hasUpcoming = Boolean(nextAirDateText);
       const upcomingLabel = isScanned
         ? (nextAirDateText ? `New episode: ${nextAirDateText}` : 'No upcoming episodes')
         : '';
@@ -1569,7 +1596,7 @@ async function renderShows() {
           : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
       const showImage = withImageCacheKey(show.image_url) || SHOW_PLACEHOLDER;
       const card = document.createElement('article');
-      card.className = `actor-card${hasMissing ? ' has-missing' : ''}`;
+      card.className = `actor-card${hasUpcoming ? ' has-new' : (hasMissing ? ' has-missing' : '')}`;
       card.innerHTML = `
         <div class="poster-wrap">
           <button class="show-scan-pill" type="button" data-show-id="${show.show_id}" title="Scan episodes for this show" aria-label="Scan episodes for this show">
@@ -1581,7 +1608,8 @@ async function renderShows() {
             <span class="show-scan-pill-text">${scanDateText}</span>
           </button>
           <img class="poster show-poster-lazy" src="${SHOW_PLACEHOLDER}" data-src="${showImage}" alt="${show.title}" loading="lazy" />
-          ${hasMissing ? '<span class="missing-badge" title="Missing episodes" aria-label="Missing episodes">!</span>' : ''}
+          ${hasUpcoming ? '<span class="new-badge" title="New episodes" aria-label="New episodes">NEW</span>' : ''}
+          ${!hasUpcoming && hasMissing ? '<span class="missing-badge" title="Missing episodes" aria-label="Missing episodes">!</span>' : ''}
           ${hasNoMissing ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
           ${showStatusBadge}
         </div>
@@ -1737,30 +1765,30 @@ async function renderShows() {
   renderShowsGrid();
 }
 
-function showSeasonsCacheKey(showId, missingOnly, inPlexOnly) {
-  return `${showId}|m:${missingOnly ? 1 : 0}|p:${inPlexOnly ? 1 : 0}`;
+function showSeasonsCacheKey(showId, missingOnly, inPlexOnly, newOnly) {
+  return `${showId}|m:${missingOnly ? 1 : 0}|p:${inPlexOnly ? 1 : 0}|n:${newOnly ? 1 : 0}`;
 }
 
-function showEpisodesCacheKey(showId, seasonNumber, missingOnly, inPlexOnly) {
-  return `${showId}|s:${seasonNumber}|m:${missingOnly ? 1 : 0}|p:${inPlexOnly ? 1 : 0}`;
+function showEpisodesCacheKey(showId, seasonNumber, missingOnly, inPlexOnly, newOnly) {
+  return `${showId}|s:${seasonNumber}|m:${missingOnly ? 1 : 0}|p:${inPlexOnly ? 1 : 0}|n:${newOnly ? 1 : 0}`;
 }
 
-async function getShowSeasonsData(showId, missingOnly, inPlexOnly) {
-  const key = showSeasonsCacheKey(showId, missingOnly, inPlexOnly);
+async function getShowSeasonsData(showId, missingOnly, inPlexOnly, newOnly) {
+  const key = showSeasonsCacheKey(showId, missingOnly, inPlexOnly, newOnly);
   if (state.showSeasonsCache[key]) {
     return state.showSeasonsCache[key];
   }
-  const data = await api(`/api/shows/${showId}/seasons?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}`);
+  const data = await api(`/api/shows/${showId}/seasons?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}&new_only=${newOnly}`);
   state.showSeasonsCache[key] = data;
   return data;
 }
 
-async function getShowEpisodesData(showId, seasonNumber, missingOnly, inPlexOnly) {
-  const key = showEpisodesCacheKey(showId, seasonNumber, missingOnly, inPlexOnly);
+async function getShowEpisodesData(showId, seasonNumber, missingOnly, inPlexOnly, newOnly) {
+  const key = showEpisodesCacheKey(showId, seasonNumber, missingOnly, inPlexOnly, newOnly);
   if (state.showEpisodesCache[key]) {
     return state.showEpisodesCache[key];
   }
-  const data = await api(`/api/shows/${showId}/seasons/${seasonNumber}/episodes?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}`);
+  const data = await api(`/api/shows/${showId}/seasons/${seasonNumber}/episodes?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}&new_only=${newOnly}`);
   state.showEpisodesCache[key] = data;
   return data;
 }
@@ -1769,6 +1797,7 @@ async function renderShowSeasons(showId) {
   const search = new URLSearchParams(window.location.search);
   const missingOnly = search.get('missingOnly') === '1';
   const inPlexOnly = search.get('inPlexOnly') === '1';
+  const newOnly = search.get('newOnly') === '1';
   app.innerHTML = `
     <div class="topbar">
       <div class="topbar-left">
@@ -1785,7 +1814,7 @@ async function renderShowSeasons(showId) {
   `;
   document.getElementById('shows-back-loading')?.addEventListener('click', () => routeTo('shows'));
 
-  const data = await getShowSeasonsData(showId, missingOnly, inPlexOnly);
+  const data = await getShowSeasonsData(showId, missingOnly, inPlexOnly, newOnly);
 
   app.innerHTML = `
     <div class="topbar">
@@ -1801,6 +1830,7 @@ async function renderShowSeasons(showId) {
       <div class="row">
         <button id="shows-missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">!</button>
         <button id="shows-in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">✓</button>
+        <button id="shows-new-toggle" class="toggle-btn ${newOnly ? 'active' : ''}">NEW</button>
       </div>
     </div>
     <section class="grid" id="show-seasons-grid"></section>
@@ -1817,6 +1847,7 @@ async function renderShowSeasons(showId) {
     const next = !missingOnly;
     if (next) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
+    else if (newOnly) params.set('newOnly', '1');
     pushQuery(params);
   });
   document.getElementById('shows-in-plex-toggle').addEventListener('click', () => {
@@ -1824,6 +1855,15 @@ async function renderShowSeasons(showId) {
     const next = !inPlexOnly;
     if (next) params.set('inPlexOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
+    else if (newOnly) params.set('newOnly', '1');
+    pushQuery(params);
+  });
+  document.getElementById('shows-new-toggle').addEventListener('click', () => {
+    const params = new URLSearchParams();
+    const next = !newOnly;
+    if (next) params.set('newOnly', '1');
+    else if (missingOnly) params.set('missingOnly', '1');
+    else if (inPlexOnly) params.set('inPlexOnly', '1');
     pushQuery(params);
   });
 
@@ -1834,12 +1874,12 @@ async function renderShowSeasons(showId) {
   }
 
   // Prefetch unfiltered episodes in the background to reduce click delay.
-  if (!missingOnly && !inPlexOnly) {
+  if (!missingOnly && !inPlexOnly && !newOnly) {
     for (const season of data.items) {
       const seasonNo = Number(season.season_number);
-      const cacheKey = showEpisodesCacheKey(showId, seasonNo, false, false);
+      const cacheKey = showEpisodesCacheKey(showId, seasonNo, false, false, false);
       if (state.showEpisodesCache[cacheKey]) continue;
-      getShowEpisodesData(showId, seasonNo, false, false).catch(() => {});
+      getShowEpisodesData(showId, seasonNo, false, false, false).catch(() => {});
     }
   }
 
@@ -1848,7 +1888,9 @@ async function renderShowSeasons(showId) {
     const seasonDownloadBadge = seasonDownloadUrl
       ? `<a class="badge-link badge-overlay badge-download" href="${seasonDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
       : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>';
-    const isMissing = !season.in_plex;
+    const isUpcoming = Boolean(season.next_upcoming_air_date);
+    const isOverflow = Boolean(season.count_overflow) && !isUpcoming;
+    const isMissing = !season.in_plex && !isOverflow && !isUpcoming;
     const seasonNextUpcoming = season.next_upcoming_air_date ? formatDateDdMmYyyy(season.next_upcoming_air_date) : null;
     const seasonDateText = season.air_date ? formatDateDdMmYyyy(season.air_date) : null;
     const seasonReleaseLabel = seasonNextUpcoming
@@ -1857,14 +1899,21 @@ async function renderShowSeasons(showId) {
         ? (isTodayOrFutureDate(season.air_date) ? `New episode: ${seasonDateText}` : `Released: ${seasonDateText}`)
         : '');
     const card = document.createElement('article');
-    card.className = `movie-card${isMissing ? ' has-missing' : ''}`;
+    card.className = `movie-card${isUpcoming ? ' has-new' : (isOverflow ? ' has-mismatch' : (isMissing ? ' has-missing' : ''))}`;
     card.innerHTML = `
       <div class="poster-wrap">
         <img class="poster" src="${withImageCacheKey(season.poster_url) || SHOW_PLACEHOLDER}" alt="${season.name}" loading="lazy" />
-        ${isMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
+        ${isUpcoming ? '<span class="new-badge" title="Upcoming episodes" aria-label="Upcoming episodes">NEW</span>' : ''}
+        ${!isUpcoming && isOverflow ? '<span class="mismatch-badge" title="Count mismatch" aria-label="Count mismatch">!</span>' : ''}
+        ${!isUpcoming && !isOverflow && isMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
+        ${season.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
         ${
           season.in_plex
-            ? `<span class="badge-link badge-overlay">Plex ${plexLogoTag()}</span>`
+            ? (
+              season.plex_web_url
+                ? `<a class="badge-link badge-overlay" href="${season.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
+                : `<span class="badge-link badge-overlay">Plex ${plexLogoTag()}</span>`
+            )
             : seasonDownloadBadge
         }
       </div>
@@ -1889,6 +1938,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
   const search = new URLSearchParams(window.location.search);
   const missingOnly = search.get('missingOnly') === '1';
   const inPlexOnly = search.get('inPlexOnly') === '1';
+  const newOnly = search.get('newOnly') === '1';
   app.innerHTML = `
     <div class="topbar">
       <div class="topbar-left">
@@ -1908,7 +1958,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
     handleLocation();
   });
 
-  const data = await getShowEpisodesData(showId, seasonNumber, missingOnly, inPlexOnly);
+  const data = await getShowEpisodesData(showId, seasonNumber, missingOnly, inPlexOnly, newOnly);
 
   app.innerHTML = `
     <div class="topbar">
@@ -1924,6 +1974,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
       <div class="row">
         <button id="episodes-missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">!</button>
         <button id="episodes-in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">✓</button>
+        <button id="episodes-new-toggle" class="toggle-btn ${newOnly ? 'active' : ''}">NEW</button>
       </div>
     </div>
     <section class="grid" id="show-episodes-grid"></section>
@@ -1943,6 +1994,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
     const next = !missingOnly;
     if (next) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
+    else if (newOnly) params.set('newOnly', '1');
     pushQuery(params);
   });
   document.getElementById('episodes-in-plex-toggle').addEventListener('click', () => {
@@ -1950,6 +2002,15 @@ async function renderShowEpisodes(showId, seasonNumber) {
     const next = !inPlexOnly;
     if (next) params.set('inPlexOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
+    else if (newOnly) params.set('newOnly', '1');
+    pushQuery(params);
+  });
+  document.getElementById('episodes-new-toggle').addEventListener('click', () => {
+    const params = new URLSearchParams();
+    const next = !newOnly;
+    if (next) params.set('newOnly', '1');
+    else if (missingOnly) params.set('missingOnly', '1');
+    else if (inPlexOnly) params.set('inPlexOnly', '1');
     pushQuery(params);
   });
 
@@ -1966,7 +2027,8 @@ async function renderShowEpisodes(showId, seasonNumber) {
     const episodeDownloadBadge = episodeDownloadUrl
       ? `<a class="badge-link badge-overlay badge-download" href="${episodeDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
       : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>';
-    const isMissing = !episode.in_plex;
+    const isUpcoming = isTodayOrFutureDate(episode.air_date);
+    const isMissing = !episode.in_plex && !isUpcoming;
     const episodeDateText = episode.air_date ? formatDateDdMmYyyy(episode.air_date) : null;
     const episodeReleaseLabel = episodeDateText
       ? (isTodayOrFutureDate(episode.air_date) ? `Releasing: ${episodeDateText}` : `Released: ${episodeDateText}`)
@@ -1975,11 +2037,12 @@ async function renderShowEpisodes(showId, seasonNumber) {
       ? `https://www.themoviedb.org/tv/${data.show.tmdb_show_id}/season/${seasonNumber}/episode/${episode.episode_number}`
       : null;
     const card = document.createElement('article');
-    card.className = `movie-card${isMissing ? ' has-missing' : ''}`;
+    card.className = `movie-card${isUpcoming ? ' has-new' : (isMissing ? ' has-missing' : '')}`;
     card.innerHTML = `
       <div class="poster-wrap">
         <img class="poster" src="${withImageCacheKey(episode.poster_url) || SHOW_PLACEHOLDER}" alt="${episode.title}" loading="lazy" />
-        ${isMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
+        ${isUpcoming ? '<span class="new-badge" title="Upcoming episode" aria-label="Upcoming episode">NEW</span>' : ''}
+        ${!isUpcoming && isMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
         ${episode.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
         ${
           episode.in_plex

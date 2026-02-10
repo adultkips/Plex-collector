@@ -366,6 +366,7 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
                 title,
                 normalized_title,
                 tmdb_episode_id,
+                season_plex_web_url,
                 plex_web_url,
                 updated_at
             )
@@ -377,6 +378,7 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
                 :title,
                 :normalized_title,
                 :tmdb_episode_id,
+                :season_plex_web_url,
                 :plex_web_url,
                 :updated_at
             )
@@ -1149,12 +1151,13 @@ def show_seasons(
     show_id: str,
     missing_only: bool = Query(False),
     in_plex_only: bool = Query(False),
+    new_only: bool = Query(False),
 ) -> dict[str, Any]:
     today = datetime.now(UTC).date().isoformat()
     with get_conn() as conn:
         show = conn.execute(
             '''
-            SELECT show_id, title, year, tmdb_show_id, image_url
+            SELECT show_id, title, year, tmdb_show_id, image_url, plex_web_url
             FROM plex_shows
             WHERE show_id = ?
             ''',
@@ -1177,7 +1180,7 @@ def show_seasons(
 
         plex_rows = conn.execute(
             '''
-            SELECT season_number, episode_number
+            SELECT season_number, episode_number, season_plex_web_url
             FROM plex_show_episodes
             WHERE show_id = ?
             ''',
@@ -1185,8 +1188,13 @@ def show_seasons(
         ).fetchall()
 
     plex_by_season: dict[int, set[int]] = {}
+    plex_season_urls: dict[int, str] = {}
     for row in plex_rows:
-        plex_by_season.setdefault(int(row['season_number']), set()).add(int(row['episode_number']))
+        season_no = int(row['season_number'])
+        plex_by_season.setdefault(season_no, set()).add(int(row['episode_number']))
+        season_url = row['season_plex_web_url']
+        if season_url and season_no not in plex_season_urls:
+            plex_season_urls[season_no] = season_url
 
     try:
         seasons = get_tv_show_seasons(int(show_data['tmdb_show_id']))
@@ -1198,7 +1206,8 @@ def show_seasons(
         season_no = int(season['season_number'])
         plex_eps = plex_by_season.get(season_no, set())
         total_eps = int(season.get('episode_count') or 0)
-        in_plex_complete = total_eps > 0 and len(plex_eps) >= total_eps
+        in_plex_complete = len(plex_eps) == total_eps
+        count_overflow = len(plex_eps) > total_eps
         next_upcoming_air_date: str | None = None
         if not in_plex_complete:
             try:
@@ -1218,12 +1227,16 @@ def show_seasons(
             **season,
             'in_plex': in_plex_complete,
             'episodes_in_plex': len(plex_eps),
+            'count_overflow': count_overflow,
+            'plex_web_url': plex_season_urls.get(season_no) or show_data.get('plex_web_url'),
             'next_upcoming_air_date': next_upcoming_air_date,
         }
         include = True
-        if missing_only and item['in_plex']:
+        if missing_only and (item['in_plex'] or item['next_upcoming_air_date']):
             include = False
         if in_plex_only and not item['in_plex']:
+            include = False
+        if new_only and not item['next_upcoming_air_date']:
             include = False
         if include:
             items.append(item)
@@ -1233,6 +1246,7 @@ def show_seasons(
         'items': items,
         'missing_only': missing_only,
         'in_plex_only': in_plex_only,
+        'new_only': new_only,
     }
 
 
@@ -1242,7 +1256,9 @@ def show_season_episodes(
     season_number: int,
     missing_only: bool = Query(False),
     in_plex_only: bool = Query(False),
+    new_only: bool = Query(False),
 ) -> dict[str, Any]:
+    today = datetime.now(UTC).date().isoformat()
     with get_conn() as conn:
         show = conn.execute(
             '''
@@ -1300,10 +1316,13 @@ def show_season_episodes(
             'plex_rating_key': matched['plex_rating_key'] if matched else None,
             'plex_web_url': matched['plex_web_url'] if matched else None,
         }
+        is_upcoming = bool(item.get('air_date')) and str(item.get('air_date')) >= today
         include = True
-        if missing_only and item['in_plex']:
+        if missing_only and (item['in_plex'] or is_upcoming):
             include = False
         if in_plex_only and not item['in_plex']:
+            include = False
+        if new_only and not is_upcoming:
             include = False
         if include:
             items.append(item)
@@ -1314,6 +1333,7 @@ def show_season_episodes(
         'items': items,
         'missing_only': missing_only,
         'in_plex_only': in_plex_only,
+        'new_only': new_only,
     }
 
 

@@ -74,6 +74,7 @@ def init_db() -> None:
                 title TEXT NOT NULL,
                 normalized_title TEXT NOT NULL,
                 tmdb_episode_id INTEGER,
+                season_plex_web_url TEXT,
                 plex_web_url TEXT,
                 updated_at TEXT NOT NULL
             )
@@ -108,6 +109,8 @@ def init_db() -> None:
         episode_columns = {row[1] for row in conn.execute("PRAGMA table_info('plex_show_episodes')").fetchall()}
         if 'tmdb_episode_id' not in episode_columns:
             conn.execute('ALTER TABLE plex_show_episodes ADD COLUMN tmdb_episode_id INTEGER')
+        if 'season_plex_web_url' not in episode_columns:
+            conn.execute('ALTER TABLE plex_show_episodes ADD COLUMN season_plex_web_url TEXT')
         if 'plex_web_url' not in episode_columns:
             conn.execute('ALTER TABLE plex_show_episodes ADD COLUMN plex_web_url TEXT')
         conn.commit()

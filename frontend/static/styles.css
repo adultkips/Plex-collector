@@ -285,6 +285,16 @@ select.secondary-btn {
   box-shadow: 0 0 0 1px rgba(185, 28, 28, 0.28);
 }
 
+.actor-card.has-new {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.34);
+}
+
+.actor-card.has-mismatch {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.34);
+}
+
 .movie-card {
   cursor: pointer;
   transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
@@ -299,6 +309,16 @@ select.secondary-btn {
 .movie-card.has-missing {
   border-color: #b91c1c;
   box-shadow: 0 0 0 1px rgba(185, 28, 28, 0.28);
+}
+
+.movie-card.has-new {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.34);
+}
+
+.movie-card.has-mismatch {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.34);
 }
 
 .poster {
@@ -578,6 +598,43 @@ select.secondary-btn {
   place-items: center;
   border: 1px solid #22c55e;
   box-shadow: 0 6px 16px rgba(20, 83, 45, 0.45);
+  z-index: 2;
+  pointer-events: none;
+}
+
+.mismatch-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: #f59e0b;
+  color: #111111;
+  font-weight: 900;
+  font-size: 15px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  border: 1px solid #f59e0b;
+  box-shadow: 0 6px 16px rgba(133, 77, 14, 0.45);
+  z-index: 2;
+  pointer-events: none;
+}
+
+.new-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  border-radius: 999px;
+  background: #3b82f6;
+  color: #ffffff;
+  font-weight: 800;
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 8px;
+  border: 1px solid #60a5fa;
+  box-shadow: 0 6px 16px rgba(30, 64, 175, 0.45);
   z-index: 2;
   pointer-events: none;
 }

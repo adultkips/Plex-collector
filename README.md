@@ -21,11 +21,23 @@ Localhost-only tool for comparing Plex library actors with TMDb movie credits to
 - Clickable `Plex` and `Download` badges on cards
 
 ## Screenshots
+Profile View
 ![Profile](screenshots/profile.png)
+
+Actors View
 ![Actors](screenshots/actors.png)
+
+Movies View
 ![Movies](screenshots/movies.png)
+
+Shows View
 ![Shows](screenshots/shows.png)
+
+Seasons View
 ![Seasons](screenshots/seasons.png)
+
+Episodes View
+![Episodes](screenshots/episodes.png)
 
 ## Requirements
 - Python 3.11+

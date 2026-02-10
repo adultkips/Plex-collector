@@ -607,6 +607,11 @@ def fetch_show_library_snapshot(
                     'title': title,
                     'normalized_title': normalize_title(title),
                     'tmdb_episode_id': tmdb_episode_id,
+                    'season_plex_web_url': (
+                        f'https://app.plex.tv/desktop#!/server/{server_client_identifier}/details?key=%2Flibrary%2Fmetadata%2F{video.attrib.get("parentRatingKey")}'
+                        if server_client_identifier and video.attrib.get('parentRatingKey')
+                        else None
+                    ),
                     'plex_web_url': (
                         f'https://app.plex.tv/desktop#!/server/{server_client_identifier}/details?key=%2Flibrary%2Fmetadata%2F{episode_rating_key}'
                         if server_client_identifier
