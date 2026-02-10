@@ -1830,6 +1830,9 @@ async function renderShowEpisodes(showId, seasonNumber) {
       ? `<a class="badge-link badge-overlay badge-download" href="${episodeDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
       : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>';
     const isMissing = !episode.in_plex;
+    const tmdbEpisodeUrl = data.show?.tmdb_show_id
+      ? `https://www.themoviedb.org/tv/${data.show.tmdb_show_id}/season/${seasonNumber}/episode/${episode.episode_number}`
+      : null;
     const card = document.createElement('article');
     card.className = `movie-card${isMissing ? ' has-missing' : ''}`;
     card.innerHTML = `
@@ -1850,6 +1853,9 @@ async function renderShowEpisodes(showId, seasonNumber) {
     `;
     const badge = card.querySelector('.badge-overlay');
     if (badge && badge.tagName === 'A') badge.addEventListener('click', (event) => event.stopPropagation());
+    if (tmdbEpisodeUrl) {
+      card.addEventListener('click', () => window.open(tmdbEpisodeUrl, '_blank', 'noopener,noreferrer'));
+    }
     applyImageFallback(card.querySelector('.poster'), SHOW_PLACEHOLDER);
     grid.appendChild(card);
   }
