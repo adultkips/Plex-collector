@@ -289,6 +289,34 @@ def _build_actor_movies_payload(
 
 def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[str, Any]]) -> None:
     with get_conn() as conn:
+        existing_rows = conn.execute(
+            '''
+            SELECT show_id, tmdb_show_id, has_missing_episodes, missing_scan_at
+            FROM plex_shows
+            '''
+        ).fetchall()
+        existing_by_id = {str(row['show_id']): dict(row) for row in existing_rows}
+
+        prepared_shows: list[dict[str, Any]] = []
+        for show in shows:
+            prepared = dict(show)
+            previous = existing_by_id.get(str(prepared.get('show_id')))
+            if previous:
+                previous_tmdb = previous.get('tmdb_show_id')
+                current_tmdb = prepared.get('tmdb_show_id')
+                same_tmdb_match = previous_tmdb == current_tmdb
+                if same_tmdb_match:
+                    prepared['has_missing_episodes'] = previous.get('has_missing_episodes')
+                    prepared['missing_scan_at'] = previous.get('missing_scan_at')
+                else:
+                    # TMDb match changed for this show; previous missing-state may be stale.
+                    prepared['has_missing_episodes'] = None
+                    prepared['missing_scan_at'] = None
+            else:
+                prepared['has_missing_episodes'] = None
+                prepared['missing_scan_at'] = None
+            prepared_shows.append(prepared)
+
         conn.execute('DELETE FROM plex_shows')
         conn.execute('DELETE FROM plex_show_episodes')
         conn.executemany(
@@ -302,6 +330,8 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
                 normalized_title,
                 image_url,
                 plex_web_url,
+                has_missing_episodes,
+                missing_scan_at,
                 updated_at
             )
             VALUES(
@@ -313,10 +343,12 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
                 :normalized_title,
                 :image_url,
                 :plex_web_url,
+                :has_missing_episodes,
+                :missing_scan_at,
                 :updated_at
             )
             ''',
-            shows,
+            prepared_shows,
         )
         conn.executemany(
             '''
