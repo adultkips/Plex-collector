@@ -6,6 +6,7 @@ const navShows = document.getElementById('nav-shows');
 const ACTOR_PLACEHOLDER = 'https://placehold.co/500x750?text=Actor';
 const MOVIE_PLACEHOLDER = 'https://placehold.co/500x750?text=Movie';
 const SHOW_PLACEHOLDER = 'https://placehold.co/500x750?text=Show';
+const PLEX_LOGO_PATH = '/assets/plexlogo.png';
 const ACTORS_BATCH_SIZE = 80;
 const ACTOR_INITIAL_FILTERS = ['0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Æ', 'Ø', 'Å', '#'];
 const DEFAULT_DOWNLOAD_PREFIX = {
@@ -45,6 +46,7 @@ const state = {
   actorsSortDir: localStorage.getItem('actorsSortDir') || 'asc',
   showsSortBy: localStorage.getItem('showsSortBy') || 'name',
   showsSortDir: localStorage.getItem('showsSortDir') || 'asc',
+  showsMissingOnly: false,
   showsInitialFilter: localStorage.getItem('showsInitialFilter') || 'A',
   showsVisibleCount: ACTORS_BATCH_SIZE,
   showsImageObserver: null,
@@ -107,6 +109,11 @@ function withImageCacheKey(url) {
   } catch {
     return url;
   }
+}
+
+function plexLogoTag(className = 'badge-logo') {
+  const logoUrl = withImageCacheKey(PLEX_LOGO_PATH);
+  return `<img src="${logoUrl}" alt="Plex" class="${className}" loading="lazy" onerror="this.style.display='none'" />`;
 }
 
 function invalidateImageCache() {
@@ -336,7 +343,7 @@ function renderOnboarding() {
         <h1>Plex Collector</h1>
         <p class="subtitle">Connect your Plex account.</p>
         <div class="row onboarding-actions">
-          <button id="plex-login" class="primary-btn">Login with Plex</button>
+          <button id="plex-login" class="primary-btn">Login with Plex <img src="${withImageCacheKey(PLEX_LOGO_PATH)}" alt="Plex" class="badge-logo" loading="lazy" onerror="this.style.display='none'" /></button>
         </div>
         <div class="status" id="onboarding-status"></div>
       </div>
@@ -914,17 +921,27 @@ function showScanModal(message) {
         <div class="scan-spinner" id="scan-spinner"></div>
       </div>
       <div class="scan-modal-msg" id="scan-modal-msg">${message}</div>
+      <div class="row" style="justify-content:center; margin-top: 12px;">
+        <button id="scan-modal-ok" class="primary-btn hidden" type="button">OK</button>
+      </div>
     </div>
   `;
   document.body.appendChild(modal);
+  const okBtn = document.getElementById('scan-modal-ok');
+  if (okBtn) okBtn.addEventListener('click', closeScanModal);
 }
 
-function showScanSuccessModal() {
+function showScanSuccessModal(message = 'Scan complete', showConfirm = false) {
   const iconWrap = document.getElementById('scan-icon-wrap');
   const msg = document.getElementById('scan-modal-msg');
+  const okBtn = document.getElementById('scan-modal-ok');
   if (!iconWrap) return;
   iconWrap.innerHTML = '<div class="scan-check">✓</div>';
-  if (msg) msg.textContent = 'Scan complete';
+  if (msg) msg.textContent = message;
+  if (okBtn) {
+    okBtn.classList.toggle('hidden', !showConfirm);
+    if (showConfirm) okBtn.focus();
+  }
 }
 
 function closeScanModal() {
@@ -995,7 +1012,7 @@ async function runScan() {
     state.actorsLoaded = false;
     const showLogs = state.profile?.show_scan_logs || [];
     renderScanLogs(result.scan_logs || [], showLogs);
-    showScanSuccessModal();
+    showScanSuccessModal('Scan complete');
     setTimeout(closeScanModal, 700);
   } catch (error) {
     status.classList.remove('success');
@@ -1020,7 +1037,7 @@ async function runShowScan() {
     state.showsLoaded = false;
     state.showSeasonsCache = {};
     state.showEpisodesCache = {};
-    showScanSuccessModal();
+    showScanSuccessModal('Scan complete');
     setTimeout(closeScanModal, 700);
     state.profile = { ...state.profile, show_scan_logs: result.show_scan_logs || [] };
     const actorLogs = state.profile?.scan_logs || [];
@@ -1292,6 +1309,8 @@ async function renderShows() {
     return;
   }
 
+  const hasMissingFlagData = state.shows.some((show) => show.has_missing_episodes !== null && show.has_missing_episodes !== undefined);
+
   app.innerHTML = `
     <div class="topbar">
       <div class="topbar-title">
@@ -1311,6 +1330,7 @@ async function renderShows() {
           <option value="amount" ${state.showsSortBy === 'amount' ? 'selected' : ''}>Amount</option>
         </select>
         <button id="shows-sort-dir" class="toggle-btn" title="Toggle sort direction" aria-label="Toggle sort direction">${state.showsSortDir === 'asc' ? '↑' : '↓'}</button>
+        ${hasMissingFlagData || state.showsMissingOnly ? `<button id="shows-missing-episodes-filter" class="toggle-btn ${state.showsMissingOnly ? 'active' : ''}">!</button>` : ''}
       </div>
     </div>
     <div class="alphabet-filter" id="shows-alphabet-filter">
@@ -1331,6 +1351,7 @@ async function renderShows() {
     </div>
     <section class="grid" id="shows-grid"></section>
     <div class="load-more-wrap" id="shows-load-more-wrap"></div>
+    <button id="shows-scan-missing-btn" class="collection-pill-btn">Scan for missing episodes</button>
   `;
 
   document.getElementById('shows-sort-by').addEventListener('change', (event) => {
@@ -1345,6 +1366,14 @@ async function renderShows() {
     state.showsVisibleCount = ACTORS_BATCH_SIZE;
     renderShows();
   });
+  const missingFilterBtn = document.getElementById('shows-missing-episodes-filter');
+  if (missingFilterBtn) {
+    missingFilterBtn.addEventListener('click', () => {
+      state.showsMissingOnly = !state.showsMissingOnly;
+      state.showsVisibleCount = ACTORS_BATCH_SIZE;
+      renderShows();
+    });
+  }
 
   const grid = document.getElementById('shows-grid');
   const loadMoreWrap = document.getElementById('shows-load-more-wrap');
@@ -1357,11 +1386,20 @@ async function renderShows() {
   });
   if (state.showsSortDir === 'desc') sortedShows.reverse();
 
+  const getScopedShows = (includeMissingFilter = true) => {
+    const query = state.showsSearchQuery.trim().toLowerCase();
+    const filteredByInitial = sortedShows.filter((show) => getActorInitialBucket(show.title) === state.showsInitialFilter);
+    let scoped = query ? sortedShows.filter((show) => (show.title || '').toLowerCase().includes(query)) : filteredByInitial;
+    if (includeMissingFilter && state.showsMissingOnly) {
+      scoped = scoped.filter((show) => Number(show.has_missing_episodes) === 1);
+    }
+    return scoped;
+  };
+
   const renderShowsGrid = () => {
     const query = state.showsSearchQuery.trim().toLowerCase();
     const isSearching = query.length > 0;
-    const filteredByInitial = sortedShows.filter((show) => getActorInitialBucket(show.title) === state.showsInitialFilter);
-    const visible = query ? sortedShows.filter((show) => (show.title || '').toLowerCase().includes(query)) : filteredByInitial;
+    const visible = getScopedShows(true);
     const renderItems = visible.slice(0, state.showsVisibleCount);
 
     for (const button of alphabetFilterEl.querySelectorAll('.alpha-btn')) {
@@ -1389,16 +1427,22 @@ async function renderShows() {
     grid.innerHTML = '';
     for (const show of renderItems) {
       const downloadUrl = buildDownloadLink('show', show.title);
-      const showDownloadBadge = downloadUrl
-        ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
-        : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
+      const hasMissing = Number(show.has_missing_episodes) === 1;
+      const hasNoMissing = Number(show.has_missing_episodes) === 0;
+      const showStatusBadge = hasNoMissing && show.plex_web_url
+        ? `<a class="badge-link badge-overlay" href="${show.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
+        : downloadUrl
+          ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
+          : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
       const showImage = withImageCacheKey(show.image_url) || SHOW_PLACEHOLDER;
       const card = document.createElement('article');
-      card.className = 'actor-card';
+      card.className = `actor-card${hasMissing ? ' has-missing' : ''}`;
       card.innerHTML = `
         <div class="poster-wrap">
           <img class="poster show-poster-lazy" src="${SHOW_PLACEHOLDER}" data-src="${showImage}" alt="${show.title}" loading="lazy" />
-          ${showDownloadBadge}
+          ${hasMissing ? '<span class="missing-badge" title="Missing episodes" aria-label="Missing episodes">!</span>' : ''}
+          ${hasNoMissing ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
+          ${showStatusBadge}
         </div>
         <div class="caption">
           <div class="name">${show.title}</div>
@@ -1472,6 +1516,58 @@ async function renderShows() {
     updateShowsSearchClear();
   });
 
+  const scanMissingBtn = document.getElementById('shows-scan-missing-btn');
+  if (scanMissingBtn) {
+    scanMissingBtn.addEventListener('click', async () => {
+      if (scanMissingBtn.disabled) return;
+      const scoped = getScopedShows(false);
+      const showIds = scoped.map((item) => String(item.show_id)).filter(Boolean);
+      if (!showIds.length) {
+        window.alert('No shows available in current filter.');
+        return;
+      }
+      scanMissingBtn.disabled = true;
+      let scanned = 0;
+      let missing = 0;
+      let failed = 0;
+      const total = showIds.length;
+      showScanModal(`Scanned ${scanned}/${total} shows`);
+      try {
+        for (const showId of showIds) {
+          const result = await api('/api/shows/missing-scan', {
+            method: 'POST',
+            body: JSON.stringify({ show_ids: [showId] }),
+          });
+          const updates = Array.isArray(result.items) ? result.items : [];
+          for (const updated of updates) {
+            if (!updated) continue;
+            if (updated.has_missing_episodes === true) missing += 1;
+            if (updated.has_missing_episodes === null || updated.has_missing_episodes === undefined) failed += 1;
+            const idx = state.shows.findIndex((s) => String(s.show_id) === String(updated.show_id));
+            if (idx >= 0) {
+              state.shows[idx] = {
+                ...state.shows[idx],
+                has_missing_episodes: updated.has_missing_episodes ? 1 : 0,
+                missing_scan_at: updated.missing_scan_at || new Date().toISOString(),
+              };
+            }
+          }
+          scanned += 1;
+          const msg = document.getElementById('scan-modal-msg');
+          if (msg) msg.textContent = `Scanned ${scanned}/${total} shows`;
+        }
+        showScanSuccessModal(`Done. Missing: ${missing}, Failed: ${failed}`, true);
+        state.showsLoaded = true;
+        renderShows();
+      } catch (error) {
+        closeScanModal();
+        window.alert(error.message);
+      } finally {
+        scanMissingBtn.disabled = false;
+      }
+    });
+  }
+
   updateShowsSearchClear();
   renderShowsGrid();
 }
@@ -1538,8 +1634,8 @@ async function renderShowSeasons(showId) {
         </div>
       </div>
       <div class="row">
-        <button id="shows-missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">Missing</button>
-        <button id="shows-in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">In Plex</button>
+        <button id="shows-missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">!</button>
+        <button id="shows-in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">✓</button>
       </div>
     </div>
     <section class="grid" id="show-seasons-grid"></section>
@@ -1587,20 +1683,22 @@ async function renderShowSeasons(showId) {
     const seasonDownloadBadge = seasonDownloadUrl
       ? `<a class="badge-link badge-overlay badge-download" href="${seasonDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
       : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>';
+    const isMissing = !season.in_plex;
     const card = document.createElement('article');
-    card.className = 'movie-card';
+    card.className = `movie-card${isMissing ? ' has-missing' : ''}`;
     card.innerHTML = `
       <div class="poster-wrap">
         <img class="poster" src="${withImageCacheKey(season.poster_url) || SHOW_PLACEHOLDER}" alt="${season.name}" loading="lazy" />
+        ${isMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
         ${
           season.in_plex
-            ? '<span class="badge-link badge-overlay">In Plex <span class="badge-icon badge-icon-check">✓</span></span>'
+            ? `<span class="badge-link badge-overlay">Plex ${plexLogoTag()}</span>`
             : seasonDownloadBadge
         }
       </div>
       <div class="caption">
         <div class="name">${season.name}</div>
-        <div class="year">${season.episodes_in_plex || 0}/${season.episode_count || 0} in Plex</div>
+        <div class="year">${season.episodes_in_plex || 0}/${season.episode_count || 0} in plex</div>
       </div>
     `;
     applyImageFallback(card.querySelector('.poster'), SHOW_PLACEHOLDER);
@@ -1651,8 +1749,8 @@ async function renderShowEpisodes(showId, seasonNumber) {
         </div>
       </div>
       <div class="row">
-        <button id="episodes-missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">Missing</button>
-        <button id="episodes-in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">In Plex</button>
+        <button id="episodes-missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">!</button>
+        <button id="episodes-in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">✓</button>
       </div>
     </div>
     <section class="grid" id="show-episodes-grid"></section>
@@ -1695,14 +1793,17 @@ async function renderShowEpisodes(showId, seasonNumber) {
     const episodeDownloadBadge = episodeDownloadUrl
       ? `<a class="badge-link badge-overlay badge-download" href="${episodeDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
       : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>';
+    const isMissing = !episode.in_plex;
     const card = document.createElement('article');
-    card.className = 'movie-card';
+    card.className = `movie-card${isMissing ? ' has-missing' : ''}`;
     card.innerHTML = `
       <div class="poster-wrap">
         <img class="poster" src="${withImageCacheKey(episode.poster_url) || SHOW_PLACEHOLDER}" alt="${episode.title}" loading="lazy" />
+        ${isMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
+        ${episode.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
         ${
           episode.in_plex
-            ? `<a class="badge-link badge-overlay" href="${episode.plex_web_url}" target="_blank" rel="noopener noreferrer">In Plex <span class="badge-icon badge-icon-check">✓</span></a>`
+            ? `<a class="badge-link badge-overlay" href="${episode.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
             : episodeDownloadBadge
         }
       </div>
@@ -1759,8 +1860,8 @@ async function renderActorDetail(actorId) {
           <option value="year" ${sortBy === 'year' ? 'selected' : ''}>Year</option>
         </select>
         <button id="movies-sort-dir" class="toggle-btn" title="Toggle sort direction" aria-label="Toggle sort direction">${sortDir === 'asc' ? '↑' : '↓'}</button>
-        <button id="missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">Missing</button>
-        <button id="in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">In Plex</button>
+        <button id="missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">!</button>
+        <button id="in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">✓</button>
       </div>
     </div>
     <section class="grid" id="movies-grid"></section>
@@ -1880,7 +1981,8 @@ async function renderActorDetail(actorId) {
     grid.innerHTML = '';
     for (const movie of visible) {
       const card = document.createElement('article');
-      card.className = 'movie-card';
+      const isMissing = !movie.in_plex;
+      card.className = `movie-card${isMissing ? ' has-missing' : ''}`;
       const tmdbUrl = movie.tmdb_id ? `https://www.themoviedb.org/movie/${movie.tmdb_id}` : null;
       const downloadUrl = buildDownloadLink('movie', movie.title);
       const movieDownloadBadge = downloadUrl
@@ -1889,9 +1991,11 @@ async function renderActorDetail(actorId) {
       card.innerHTML = `
         <div class="poster-wrap">
           <img class="poster" src="${withImageCacheKey(movie.poster_url) || MOVIE_PLACEHOLDER}" alt="${movie.title}" loading="lazy" />
+          ${isMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
+          ${movie.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
           ${
             movie.in_plex
-              ? `<a class="badge-link badge-overlay" href="${movie.plex_web_url}" target="_blank" rel="noopener noreferrer">In Plex <span class="badge-icon badge-icon-check">✓</span></a>`
+              ? `<a class="badge-link badge-overlay" href="${movie.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
               : movieDownloadBadge
           }
         </div>
