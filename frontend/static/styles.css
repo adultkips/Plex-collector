@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   --bg: #0e1116;
   --surface: #151b24;
   --surface-alt: #1c2634;
@@ -9,6 +9,7 @@
   --danger: #ef4444;
   --border: #2a3443;
   --shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+  --app-pad-x: 18px;
 }
 
 * { box-sizing: border-box; }
@@ -18,6 +19,7 @@ body {
   color: var(--text);
   background: radial-gradient(circle at top right, #1f2937 0%, #0b0f14 55%);
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 a { color: inherit; }
@@ -25,7 +27,7 @@ a { color: inherit; }
 #app {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 24px 18px 160px;
+  padding: 24px var(--app-pad-x) 160px;
 }
 
 body.full-grid-mode #app {
@@ -72,7 +74,7 @@ h1, h2, h3 { margin: 0; }
 .primary-btn, .secondary-btn, .toggle-btn {
   border: 0;
   border-radius: 12px;
-  padding: 8px 18px;
+  padding: 8px var(--app-pad-x);
   font-weight: 700;
   cursor: pointer;
 }
@@ -109,7 +111,7 @@ select.secondary-btn {
 
 .search-toggle-btn {
   border: 0;
-  padding: 8px 18px;
+  padding: 8px var(--app-pad-x);
   border-radius: 12px;
   background: #2a3443;
   color: #dbe4f3;
@@ -425,10 +427,9 @@ select.secondary-btn {
   position: sticky;
   top: 0;
   z-index: 40;
-  width: calc(100% + 36px);
-  margin-left: -18px;
-  margin-right: -18px;
-  padding: 8px 18px;
+  margin-left: calc(var(--app-pad-x) * -1);
+  margin-right: calc(var(--app-pad-x) * -1);
+  padding: 8px var(--app-pad-x);
   border-bottom: 1px solid transparent;
   box-shadow: none;
   transition: border-color 120ms ease, box-shadow 120ms ease;
@@ -954,7 +955,8 @@ body.is-scrolled .topbar {
 .hidden { display: none !important; }
 
 @media (max-width: 700px) {
-  #app { padding: 18px 12px 110px; }
+  :root { --app-pad-x: 12px; }
+  #app { padding: 18px var(--app-pad-x) 110px; }
   .onboarding .card { padding: 24px; }
   .grid { grid-template-columns: repeat(2, 1fr); }
 }
@@ -967,3 +969,4 @@ body.is-scrolled .topbar {
     display: none;
   }
 }
+
