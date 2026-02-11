@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,7 @@ from .tmdb_client import get_tmdb_api_key
 from .utils import normalize_title
 
 app = FastAPI(title=APP_NAME, version=APP_VERSION)
+logger = logging.getLogger(__name__)
 trusted_hosts = {'127.0.0.1', 'localhost', '::1'}
 if HOST and HOST not in {'0.0.0.0', '::'}:
     trusted_hosts.add(HOST)
@@ -889,6 +891,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
         except TMDbNotConfiguredError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
+            logger.exception('Missing-episode scan failed for show_id=%s', show_id)
             failed_total += 1
             results.append(
                 {
@@ -897,7 +900,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
                     'missing_episode_count': None,
                     'missing_scan_at': None,
                     'missing_upcoming_air_dates': [],
-                    'error': str(exc),
+                    'error': 'Unable to scan this show right now.',
                 }
             )
 
