@@ -63,6 +63,7 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
 - Python 3.11+
 - Plex account with access to a Plex server
 - TMDb API key
+- Windows environment for the included launcher scripts (`Install.bat`, `start_server.bat`)
 
 ## Install
 Run first-time setup (creates `.venv` and installs dependencies):
@@ -79,16 +80,26 @@ start_server.bat
 Open `http://127.0.0.1:8787`.
 
 ## Notes
-- Data is cached locally in `backend/data/plex_collector.db`.
-- Use `Scan Actors` on the Profile page after login.
-- This app prefers local Plex connections when available.
-- `Install.bat` auto-creates or recreates `.venv` if it belongs to another machine/user.
+- The app is designed for local use on `127.0.0.1` and stores app state in `backend/data/plex_collector.db`.
+- Use the Profile page to run `Scan Actors` and `Scan Shows`, then use `Scan Episodes` from the Shows page when needed.
+- UI performance is cache-first: Profile, Actors, and Shows render from local cache and refresh in the background.
+- Image cache is invalidated automatically after scans/resets to avoid stale posters.
+- `Install.bat` creates or recreates `.venv` if it belongs to another machine/user, and `start_server.bat` is used for normal startup.
 
 ## Security
 - See `SECURITY.md` for vulnerability reporting.
+- Keep API keys and tokens out of git; use local `.env` only (never commit secrets).
+- Treat `backend/data/plex_collector.db` as sensitive local data (it can contain account/session related app data).
+- Run this app on trusted local networks and avoid exposing the local server publicly.
 - Dependency vulnerability checks run in GitHub Actions (`.github/workflows/security.yml`).
 - Static code scanning runs via CodeQL (`.github/workflows/codeql.yml`).
 
 ## Contributing
-- See `CONTRIBUTING.md`.
+- See `CONTRIBUTING.md` for workflow and conventions.
+- Open an issue before large feature changes to align scope and UX direction.
+- Keep PRs focused and include:
+  - what changed
+  - why it changed
+  - how it was tested
+- Update README/screenshots when user-facing behavior changes.
 
