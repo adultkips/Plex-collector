@@ -48,6 +48,8 @@ const state = {
   actorsSortDir: localStorage.getItem('actorsSortDir') || 'asc',
   showsSortBy: localStorage.getItem('showsSortBy') || 'name',
   showsSortDir: localStorage.getItem('showsSortDir') || 'asc',
+  showsSeasonsSortDir: localStorage.getItem('showsSeasonsSortDir') || 'asc',
+  showsEpisodesSortDir: localStorage.getItem('showsEpisodesSortDir') || 'asc',
   showsMissingOnly: false,
   showsInPlexOnly: false,
   showsNewOnly: false,
@@ -69,6 +71,13 @@ navActors.addEventListener('click', () => routeTo('actors'));
 navShows.addEventListener('click', () => routeTo('shows'));
 
 window.addEventListener('popstate', handleLocation);
+
+function updateScrollState() {
+  document.body.classList.toggle('is-scrolled', window.scrollY > 0);
+}
+
+window.addEventListener('scroll', updateScrollState, { passive: true });
+updateScrollState();
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -1198,11 +1207,11 @@ async function renderActors() {
     <div class="topbar">
       <div class="topbar-title">
         <h2>Actors</h2>
-        <div class="meta">${state.actors.length} actors ${data.last_scan_at ? `- last scan ${new Date(data.last_scan_at).toLocaleString()}` : ''}</div>
+        <div class="meta">${state.actors.length} actors</div>
       </div>
       <div class="row">
         <div id="actors-search-control" class="search-control ${state.actorsSearchOpen ? 'open' : ''}">
-          <button id="actors-search-toggle" class="search-toggle-btn" title="Search" aria-label="Search">
+          <button id="actors-search-toggle" class="search-toggle-btn has-pill-tooltip" title="Search" aria-label="Search" data-tooltip="Search">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 1-4.24 10.24A6 6 0 0 1 10 4m0-2a8 8 0 1 0 5.29 14l4.85 4.85 1.41-1.41-4.85-4.85A8 8 0 0 0 10 2Z"/></svg>
           </button>
           <input id="actors-search-input" class="search-input" type="text" placeholder="Search actors" value="${state.actorsSearchQuery}" />
@@ -1212,7 +1221,7 @@ async function renderActors() {
           <option value="name" ${state.actorsSortBy === 'name' ? 'selected' : ''}>Name</option>
           <option value="amount" ${state.actorsSortBy === 'amount' ? 'selected' : ''}>Amount</option>
         </select>
-        <button id="actors-sort-dir" class="toggle-btn" title="Toggle sort direction" aria-label="Toggle sort direction">${state.actorsSortDir === 'asc' ? '↑' : '↓'}</button>
+        <button id="actors-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.actorsSortDir === 'asc' ? '↑' : '↓'}</button>
       </div>
     </div>
     <div class="alphabet-filter" id="actors-alphabet-filter">
@@ -1427,11 +1436,11 @@ async function renderShows() {
     <div class="topbar">
       <div class="topbar-title">
         <h2>Shows</h2>
-        <div class="meta">${state.shows.length} shows ${data.last_scan_at ? `- last scan ${new Date(data.last_scan_at).toLocaleString()}` : ''}</div>
+        <div class="meta">${state.shows.length} shows</div>
       </div>
       <div class="row">
         <div id="shows-search-control" class="search-control ${state.showsSearchOpen ? 'open' : ''}">
-          <button id="shows-search-toggle" class="search-toggle-btn" title="Search" aria-label="Search">
+          <button id="shows-search-toggle" class="search-toggle-btn has-pill-tooltip" title="Search" aria-label="Search" data-tooltip="Search">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 1-4.24 10.24A6 6 0 0 1 10 4m0-2a8 8 0 1 0 5.29 14l4.85 4.85 1.41-1.41-4.85-4.85A8 8 0 0 0 10 2Z"/></svg>
           </button>
           <input id="shows-search-input" class="search-input" type="text" placeholder="Search shows" value="${state.showsSearchQuery}" />
@@ -1440,11 +1449,12 @@ async function renderShows() {
         <select id="shows-sort-by" class="secondary-btn" aria-label="Sort shows by">
           <option value="name" ${state.showsSortBy === 'name' ? 'selected' : ''}>Name</option>
           <option value="amount" ${state.showsSortBy === 'amount' ? 'selected' : ''}>Amount</option>
+          <option value="date" ${state.showsSortBy === 'date' ? 'selected' : ''}>Date</option>
         </select>
-        <button id="shows-sort-dir" class="toggle-btn" title="Toggle sort direction" aria-label="Toggle sort direction">${state.showsSortDir === 'asc' ? '↑' : '↓'}</button>
-        ${hasMissingFlagData || state.showsMissingOnly ? `<button id="shows-missing-episodes-filter" class="toggle-btn ${state.showsMissingOnly ? 'active' : ''}">!</button>` : ''}
-        ${hasInPlexFlagData || state.showsInPlexOnly ? `<button id="shows-in-plex-filter" class="toggle-btn ${state.showsInPlexOnly ? 'active' : ''}">&#10003;</button>` : ''}
-        ${hasNewData || state.showsNewOnly ? `<button id="shows-new-filter" class="toggle-btn ${state.showsNewOnly ? 'active' : ''}">NEW</button>` : ''}
+        <button id="shows-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.showsSortDir === 'asc' ? '↑' : '↓'}</button>
+        ${hasMissingFlagData || state.showsMissingOnly ? `<button id="shows-missing-episodes-filter" class="toggle-btn has-pill-tooltip ${state.showsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>` : ''}
+        ${hasInPlexFlagData || state.showsInPlexOnly ? `<button id="shows-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.showsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>` : ''}
+        ${hasNewData || state.showsNewOnly ? `<button id="shows-new-filter" class="toggle-btn has-pill-tooltip ${state.showsNewOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>` : ''}
       </div>
     </div>
     <div class="alphabet-filter" id="shows-alphabet-filter">
@@ -1522,6 +1532,14 @@ async function renderShows() {
   const alphabetFilterEl = document.getElementById('shows-alphabet-filter');
   const sortedShows = [...state.shows].sort((a, b) => {
     if (state.showsSortBy === 'name') {
+      return compareActorNames({ name: a.title }, { name: b.title });
+    }
+    if (state.showsSortBy === 'date') {
+      const aDate = nextUpcomingAirDate(a.missing_upcoming_air_dates) || '';
+      const bDate = nextUpcomingAirDate(b.missing_upcoming_air_dates) || '';
+      if (aDate && bDate && aDate !== bDate) return aDate.localeCompare(bDate);
+      if (aDate && !bDate) return -1;
+      if (!aDate && bDate) return 1;
       return compareActorNames({ name: a.title }, { name: b.title });
     }
     return (a.episodes_in_plex || 0) - (b.episodes_in_plex || 0);
@@ -1798,6 +1816,7 @@ async function renderShowSeasons(showId) {
   const missingOnly = search.get('missingOnly') === '1';
   const inPlexOnly = search.get('inPlexOnly') === '1';
   const newOnly = search.get('newOnly') === '1';
+  const seasonsSortDir = state.showsSeasonsSortDir === 'desc' ? 'desc' : 'asc';
   app.innerHTML = `
     <div class="topbar">
       <div class="topbar-left">
@@ -1828,9 +1847,10 @@ async function renderShowSeasons(showId) {
         </div>
       </div>
       <div class="row">
-        <button id="shows-missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">!</button>
-        <button id="shows-in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">✓</button>
-        <button id="shows-new-toggle" class="toggle-btn ${newOnly ? 'active' : ''}">NEW</button>
+        <button id="seasons-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${seasonsSortDir === 'asc' ? '↑' : '↓'}</button>
+        <button id="shows-missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
+        <button id="shows-in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">✓</button>
+        <button id="shows-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
       </div>
     </div>
     <section class="grid" id="show-seasons-grid"></section>
@@ -1842,6 +1862,11 @@ async function renderShowSeasons(showId) {
     renderShowSeasons(showId);
   };
   document.getElementById('shows-back').addEventListener('click', () => routeTo('shows'));
+  document.getElementById('seasons-sort-dir').addEventListener('click', () => {
+    state.showsSeasonsSortDir = seasonsSortDir === 'asc' ? 'desc' : 'asc';
+    localStorage.setItem('showsSeasonsSortDir', state.showsSeasonsSortDir);
+    renderShowSeasons(showId);
+  });
   document.getElementById('shows-missing-toggle').addEventListener('click', () => {
     const params = new URLSearchParams();
     const next = !missingOnly;
@@ -1883,7 +1908,14 @@ async function renderShowSeasons(showId) {
     }
   }
 
-  for (const season of data.items) {
+  const seasons = [...data.items].sort((a, b) => {
+    const aNo = Number(a.season_number) || 0;
+    const bNo = Number(b.season_number) || 0;
+    return aNo - bNo;
+  });
+  if (seasonsSortDir === 'desc') seasons.reverse();
+
+  for (const season of seasons) {
     const seasonDownloadUrl = buildDownloadLink('season', buildSeasonKeyword(data.show.title, season.season_number));
     const seasonDownloadBadge = seasonDownloadUrl
       ? `<a class="badge-link badge-overlay badge-download" href="${seasonDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
@@ -1939,6 +1971,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
   const missingOnly = search.get('missingOnly') === '1';
   const inPlexOnly = search.get('inPlexOnly') === '1';
   const newOnly = search.get('newOnly') === '1';
+  const episodesSortDir = state.showsEpisodesSortDir === 'desc' ? 'desc' : 'asc';
   app.innerHTML = `
     <div class="topbar">
       <div class="topbar-left">
@@ -1972,9 +2005,10 @@ async function renderShowEpisodes(showId, seasonNumber) {
         </div>
       </div>
       <div class="row">
-        <button id="episodes-missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">!</button>
-        <button id="episodes-in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">✓</button>
-        <button id="episodes-new-toggle" class="toggle-btn ${newOnly ? 'active' : ''}">NEW</button>
+        <button id="episodes-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${episodesSortDir === 'asc' ? '↑' : '↓'}</button>
+        <button id="episodes-missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
+        <button id="episodes-in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">✓</button>
+        <button id="episodes-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
       </div>
     </div>
     <section class="grid" id="show-episodes-grid"></section>
@@ -1988,6 +2022,11 @@ async function renderShowEpisodes(showId, seasonNumber) {
   document.getElementById('season-back').addEventListener('click', () => {
     history.pushState({}, '', `/shows/${showId}`);
     handleLocation();
+  });
+  document.getElementById('episodes-sort-dir').addEventListener('click', () => {
+    state.showsEpisodesSortDir = episodesSortDir === 'asc' ? 'desc' : 'asc';
+    localStorage.setItem('showsEpisodesSortDir', state.showsEpisodesSortDir);
+    renderShowEpisodes(showId, seasonNumber);
   });
   document.getElementById('episodes-missing-toggle').addEventListener('click', () => {
     const params = new URLSearchParams();
@@ -2019,7 +2058,14 @@ async function renderShowEpisodes(showId, seasonNumber) {
     grid.innerHTML = '<div class="empty">No episodes found.</div>';
     return;
   }
-  for (const episode of data.items) {
+  const episodes = [...data.items].sort((a, b) => {
+    const aNo = Number(a.episode_number) || 0;
+    const bNo = Number(b.episode_number) || 0;
+    return aNo - bNo;
+  });
+  if (episodesSortDir === 'desc') episodes.reverse();
+
+  for (const episode of episodes) {
     const episodeDownloadUrl = buildDownloadLink(
       'episode',
       buildEpisodeKeyword(data.show.title, seasonNumber, episode.episode_number),
@@ -2095,7 +2141,7 @@ async function renderActorDetail(actorId) {
       </div>
       <div class="row">
         <div id="movies-search-control" class="search-control ${state.moviesSearchOpen ? 'open' : ''}">
-          <button id="movies-search-toggle" class="search-toggle-btn" title="Search" aria-label="Search">
+          <button id="movies-search-toggle" class="search-toggle-btn has-pill-tooltip" title="Search" aria-label="Search" data-tooltip="Search">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 1-4.24 10.24A6 6 0 0 1 10 4m0-2a8 8 0 1 0 5.29 14l4.85 4.85 1.41-1.41-4.85-4.85A8 8 0 0 0 10 2Z"/></svg>
           </button>
           <input id="movies-search-input" class="search-input" type="text" placeholder="Search movies" value="${state.moviesSearchQuery}" />
@@ -2105,9 +2151,9 @@ async function renderActorDetail(actorId) {
           <option value="title" ${sortBy === 'title' ? 'selected' : ''}>Title</option>
           <option value="year" ${sortBy === 'year' ? 'selected' : ''}>Year</option>
         </select>
-        <button id="movies-sort-dir" class="toggle-btn" title="Toggle sort direction" aria-label="Toggle sort direction">${sortDir === 'asc' ? '↑' : '↓'}</button>
-        <button id="missing-toggle" class="toggle-btn ${missingOnly ? 'active' : ''}">!</button>
-        <button id="in-plex-toggle" class="toggle-btn ${inPlexOnly ? 'active' : ''}">✓</button>
+        <button id="movies-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${sortDir === 'asc' ? '↑' : '↓'}</button>
+        <button id="missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
+        <button id="in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">✓</button>
       </div>
     </div>
     <div class="alphabet-filter" id="movies-alphabet-filter">
