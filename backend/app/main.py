@@ -297,7 +297,7 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
     with get_conn() as conn:
         existing_rows = conn.execute(
             '''
-            SELECT show_id, tmdb_show_id, has_missing_episodes, missing_scan_at, missing_upcoming_air_dates
+            SELECT show_id, tmdb_show_id, has_missing_episodes, missing_episode_count, missing_scan_at, missing_upcoming_air_dates
             FROM plex_shows
             '''
         ).fetchall()
@@ -313,15 +313,18 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
                 same_tmdb_match = previous_tmdb == current_tmdb
                 if same_tmdb_match:
                     prepared['has_missing_episodes'] = previous.get('has_missing_episodes')
+                    prepared['missing_episode_count'] = previous.get('missing_episode_count')
                     prepared['missing_scan_at'] = previous.get('missing_scan_at')
                     prepared['missing_upcoming_air_dates'] = previous.get('missing_upcoming_air_dates')
                 else:
                     # TMDb match changed for this show; previous missing-state may be stale.
                     prepared['has_missing_episodes'] = None
+                    prepared['missing_episode_count'] = None
                     prepared['missing_scan_at'] = None
                     prepared['missing_upcoming_air_dates'] = None
             else:
                 prepared['has_missing_episodes'] = None
+                prepared['missing_episode_count'] = None
                 prepared['missing_scan_at'] = None
                 prepared['missing_upcoming_air_dates'] = None
             prepared_shows.append(prepared)
@@ -340,6 +343,7 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
                 image_url,
                 plex_web_url,
                 has_missing_episodes,
+                missing_episode_count,
                 missing_scan_at,
                 missing_upcoming_air_dates,
                 updated_at
@@ -354,6 +358,7 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
                 :image_url,
                 :plex_web_url,
                 :has_missing_episodes,
+                :missing_episode_count,
                 :missing_scan_at,
                 :missing_upcoming_air_dates,
                 :updated_at
@@ -798,7 +803,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
 
     now_iso = datetime.now(UTC).isoformat()
     results: list[dict[str, Any]] = []
-    updates: list[tuple[int, str, str | None, str, str]] = []
+    updates: list[tuple[int, int, str, str | None, str, str]] = []
     missing_total = 0
     failed_total = 0
     scanned_total = 0
@@ -892,7 +897,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
                     if key in tmdb_episode_air_dates
                 }
             )
-            updates.append((has_missing, now_iso, json.dumps(upcoming_air_dates), now_iso, show_id))
+            updates.append((has_missing, missing_episode_count, now_iso, json.dumps(upcoming_air_dates), now_iso, show_id))
             results.append(
                 {
                     'show_id': show_id,
@@ -924,7 +929,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
             conn.executemany(
                 '''
                 UPDATE plex_shows
-                SET has_missing_episodes = ?, missing_scan_at = ?, missing_upcoming_air_dates = ?, updated_at = ?
+                SET has_missing_episodes = ?, missing_episode_count = ?, missing_scan_at = ?, missing_upcoming_air_dates = ?, updated_at = ?
                 WHERE show_id = ?
                 ''',
                 updates,
@@ -1161,13 +1166,14 @@ def shows() -> dict[str, Any]:
                 s.image_url,
                 s.plex_web_url,
                 s.has_missing_episodes,
+                s.missing_episode_count,
                 s.missing_scan_at,
                 s.missing_upcoming_air_dates,
                 s.updated_at,
                 COUNT(e.plex_rating_key) AS episodes_in_plex
             FROM plex_shows s
             LEFT JOIN plex_show_episodes e ON e.show_id = s.show_id
-            GROUP BY s.show_id, s.title, s.year, s.image_url, s.plex_web_url, s.has_missing_episodes, s.missing_scan_at, s.missing_upcoming_air_dates, s.updated_at
+            GROUP BY s.show_id, s.title, s.year, s.image_url, s.plex_web_url, s.has_missing_episodes, s.missing_episode_count, s.missing_scan_at, s.missing_upcoming_air_dates, s.updated_at
             ORDER BY episodes_in_plex DESC, s.title ASC
             '''
         ).fetchall()

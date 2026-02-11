@@ -57,7 +57,12 @@ const state = {
   moviesInitialFilter: localStorage.getItem('moviesInitialFilter') || 'All',
   actorsSortBy: localStorage.getItem('actorsSortBy') || 'name',
   actorsSortDir: localStorage.getItem('actorsSortDir') || 'asc',
-  showsSortBy: localStorage.getItem('showsSortBy') || 'name',
+  showsSortBy: (() => {
+    const stored = localStorage.getItem('showsSortBy') || 'name';
+    if (stored === 'amount') return 'episodes';
+    if (['episodes', 'missing', 'name', 'date'].includes(stored)) return stored;
+    return 'name';
+  })(),
   showsSortDir: localStorage.getItem('showsSortDir') || 'asc',
   showsSeasonsSortDir: localStorage.getItem('showsSeasonsSortDir') || 'asc',
   showsEpisodesSortDir: localStorage.getItem('showsEpisodesSortDir') || 'asc',
@@ -470,6 +475,9 @@ function applyShowMissingScanUpdate(updated) {
   const nextMissing = updated.has_missing_episodes;
   const current = state.shows[idx];
   current.has_missing_episodes = nextMissing === null || nextMissing === undefined ? null : (nextMissing ? 1 : 0);
+  current.missing_episode_count = Number.isFinite(Number(updated.missing_episode_count))
+    ? Number(updated.missing_episode_count)
+    : (current.missing_episode_count ?? null);
   current.missing_scan_at = updated.missing_scan_at || current.missing_scan_at || null;
   current.missing_upcoming_air_dates = Array.isArray(updated.missing_upcoming_air_dates)
     ? updated.missing_upcoming_air_dates
@@ -1412,8 +1420,8 @@ async function renderActors(enableBackgroundRefresh = true) {
           <button id="actors-search-clear" class="search-clear-btn ${state.actorsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
         </div>
         <select id="actors-sort-by" class="secondary-btn" aria-label="Sort actors by">
+          <option value="amount" ${state.actorsSortBy === 'amount' ? 'selected' : ''}>Movies</option>
           <option value="name" ${state.actorsSortBy === 'name' ? 'selected' : ''}>Name</option>
-          <option value="amount" ${state.actorsSortBy === 'amount' ? 'selected' : ''}>Amount</option>
         </select>
         <button id="actors-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.actorsSortDir === 'asc' ? '↑' : '↓'}</button>
       </div>
@@ -1644,9 +1652,10 @@ async function renderShows(enableBackgroundRefresh = true) {
           <button id="shows-search-clear" class="search-clear-btn ${state.showsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
         </div>
         <select id="shows-sort-by" class="secondary-btn" aria-label="Sort shows by">
-          <option value="name" ${state.showsSortBy === 'name' ? 'selected' : ''}>Name</option>
-          <option value="amount" ${state.showsSortBy === 'amount' ? 'selected' : ''}>Amount</option>
           <option value="date" ${state.showsSortBy === 'date' ? 'selected' : ''}>Date</option>
+          <option value="episodes" ${state.showsSortBy === 'episodes' ? 'selected' : ''}>Episodes</option>
+          <option value="missing" ${state.showsSortBy === 'missing' ? 'selected' : ''}>Missing</option>
+          <option value="name" ${state.showsSortBy === 'name' ? 'selected' : ''}>Name</option>
         </select>
         <button id="shows-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.showsSortDir === 'asc' ? '↑' : '↓'}</button>
         ${hasMissingFlagData || state.showsMissingOnly ? `<button id="shows-missing-episodes-filter" class="toggle-btn has-pill-tooltip ${state.showsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>` : ''}
@@ -1731,6 +1740,15 @@ async function renderShows(enableBackgroundRefresh = true) {
     if (state.showsSortBy === 'name') {
       return compareActorNames({ name: a.title }, { name: b.title });
     }
+    if (state.showsSortBy === 'episodes') {
+      return (a.episodes_in_plex || 0) - (b.episodes_in_plex || 0);
+    }
+    if (state.showsSortBy === 'missing') {
+      const aMissing = Number.isFinite(Number(a.missing_episode_count)) ? Number(a.missing_episode_count) : -1;
+      const bMissing = Number.isFinite(Number(b.missing_episode_count)) ? Number(b.missing_episode_count) : -1;
+      if (aMissing !== bMissing) return aMissing - bMissing;
+      return compareActorNames({ name: a.title }, { name: b.title });
+    }
     if (state.showsSortBy === 'date') {
       const aDate = nextUpcomingAirDate(a.missing_upcoming_air_dates) || '';
       const bDate = nextUpcomingAirDate(b.missing_upcoming_air_dates) || '';
@@ -1739,7 +1757,7 @@ async function renderShows(enableBackgroundRefresh = true) {
       if (!aDate && bDate) return 1;
       return compareActorNames({ name: a.title }, { name: b.title });
     }
-    return (a.episodes_in_plex || 0) - (b.episodes_in_plex || 0);
+    return compareActorNames({ name: a.title }, { name: b.title });
   });
   if (state.showsSortDir === 'desc') sortedShows.reverse();
 
@@ -1784,6 +1802,8 @@ async function renderShows(enableBackgroundRefresh = true) {
       const isScanned = Boolean(show.missing_scan_at);
       const hasMissing = isScanned && Number(show.has_missing_episodes) === 1;
       const hasNoMissing = isScanned && Number(show.has_missing_episodes) === 0;
+      const hasMissingCount = Number.isFinite(Number(show.missing_episode_count));
+      const missingEpisodeCount = hasMissingCount ? Number(show.missing_episode_count) : null;
       const scanDateText = formatScanDateOnly(show.missing_scan_at);
       const nextAirDate = nextUpcomingAirDate(show.missing_upcoming_air_dates);
       const nextAirDateText = nextAirDate ? formatDateDdMmYyyy(nextAirDate) : null;
@@ -1817,7 +1837,7 @@ async function renderShows(enableBackgroundRefresh = true) {
         </div>
         <div class="caption">
           <div class="name">${show.title}</div>
-          <div class="count">${show.episodes_in_plex || 0} episodes from Plex</div>
+          <div class="count">${hasMissing ? (missingEpisodeCount === null ? 'Missing episodes' : `${missingEpisodeCount} missing episodes`) : `${show.episodes_in_plex || 0} episodes from Plex`}</div>
           ${upcomingLabel ? `<div class="count">${upcomingLabel}</div>` : ''}
         </div>
       `;
@@ -1915,7 +1935,7 @@ async function renderShows(enableBackgroundRefresh = true) {
   if (scanMissingBtn) {
     scanMissingBtn.addEventListener('click', async () => {
       if (scanMissingBtn.disabled) return;
-      const scoped = getScopedShows(false);
+      const scoped = getScopedShows(true);
       const scopedIds = scoped.map((item) => String(item.show_id)).filter(Boolean);
       const allIds = state.shows.map((item) => String(item.show_id)).filter(Boolean);
       if (!allIds.length) {
