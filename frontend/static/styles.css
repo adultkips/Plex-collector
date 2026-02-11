@@ -221,10 +221,23 @@ select.secondary-btn {
   border: 2px solid #334155;
 }
 
-.profile-reset-btn {
+.profile-header-actions {
   position: absolute;
   top: 14px;
   right: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.profile-reset-btn {
+  position: static;
+}
+
+.profile-save-btn {
+  position: static;
+  background: #f59e0b;
+  color: #1a1200;
 }
 
 .meta {
@@ -245,11 +258,33 @@ select.secondary-btn {
 }
 
 .settings-row { margin-top: 10px; }
-.server-select { width: 280px; }
-.tmdb-key-input { min-width: 280px; }
+.server-select { width: 260px; }
+.tmdb-key-input { width: 260px; }
 .download-prefix-card { padding: 18px; }
+.download-prefix-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.download-prefix-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.prefix-section {
+  margin-top: 8px;
+}
+.prefix-section-label {
+  display: block;
+  width: 100%;
+  margin-bottom: 0;
+}
+.prefix-section-controls {
+  margin-top: 6px;
+}
 .prefix-input { min-width: 260px; }
-.prefix-format-select { width: 170px; }
+.prefix-format-select { width: 260px; }
 .prefix-example {
   width: 100%;
   margin-top: 6px;
@@ -258,7 +293,13 @@ select.secondary-btn {
   font-style: italic;
 }
 .library-sync-card { padding: 18px; }
-.library-sync-actions { margin-top: 12px; }
+.library-sync-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.library-sync-actions { margin-top: 0; }
 .actors-empty { margin-top: 14px; }
 
 .grid {
@@ -293,8 +334,8 @@ select.secondary-btn {
 }
 
 .btn-scan-icon {
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
   border-radius: 999px;
   background: #f59e0b;
   color: #0b0f14;
@@ -470,7 +511,10 @@ body.is-scrolled .topbar {
 
 .badge-link {
   margin-top: 8px;
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
   text-decoration: none;
   background: #f59e0b;
   color: #2b1a00;
@@ -489,7 +533,6 @@ body.is-scrolled .topbar {
 }
 
 .badge-icon {
-  margin-left: 6px;
   font-weight: 800;
   width: 16px;
   height: 16px;
@@ -701,7 +744,6 @@ body.is-scrolled .topbar {
 .status.error { color: #fecaca; }
 .status.success { color: #a7f3d0; }
 #scan-status.success { color: #86efac; font-weight: 700; }
-#scan-shows-status.success { color: #86efac; font-weight: 700; }
 #scan-status.error { color: #fecaca; }
 .status-check {
   color: #86efac;
@@ -774,13 +816,13 @@ body.is-scrolled .topbar {
 }
 
 .scan-check {
-  width: 54px;
-  height: 54px;
+  width: 100px;
+  height: 100px;
   border-radius: 50%;
   background: rgba(16, 185, 129, 0.25);
   border: 2px solid rgba(16, 185, 129, 0.55);
   color: #86efac;
-  font-size: 1.9rem;
+  font-size: 3.9rem;
   line-height: 1;
   display: grid;
   place-items: center;

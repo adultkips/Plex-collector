@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,8 @@ from .utils import normalize_title
 
 app = FastAPI(title=APP_NAME, version=APP_VERSION)
 logger = logging.getLogger(__name__)
+PLEX_IMAGE_BEST_URI_BY_SERVER: dict[str, str] = {}
+PLEX_IMAGE_URI_FAIL_UNTIL: dict[str, float] = {}
 trusted_hosts = {'127.0.0.1', 'localhost', '::1'}
 if HOST and HOST not in {'0.0.0.0', '::'}:
     trusted_hosts.add(HOST)
@@ -114,7 +117,7 @@ DEFAULT_DOWNLOAD_PREFIX = {
     'episode_mode': 'encoded_space',
     'episode_end': '',
 }
-VALID_DOWNLOAD_MODES = {'encoded_space', 'hyphen'}
+VALID_DOWNLOAD_MODES = {'encoded_space', 'hyphen', 'plus'}
 
 
 def get_download_prefix_settings() -> dict[str, str]:
@@ -486,6 +489,18 @@ def reset_app_state() -> dict[str, bool]:
         conn.execute('DELETE FROM settings')
         conn.commit()
     return {'ok': True}
+
+
+@app.post('/api/scan/reset')
+def reset_scan_state() -> dict[str, Any]:
+    with get_conn() as conn:
+        conn.execute('DELETE FROM actors')
+        conn.execute('DELETE FROM plex_movies')
+        conn.execute('DELETE FROM plex_shows')
+        conn.execute('DELETE FROM plex_show_episodes')
+        conn.commit()
+    clear_settings(['scan_logs', 'show_scan_logs', 'last_scan_at', 'last_show_scan_at'])
+    return {'ok': True, 'scan_logs': [], 'show_scan_logs': []}
 
 
 @app.get('/api/profile')
@@ -930,6 +945,16 @@ def plex_image(thumb: str = Query(...)) -> Response:
     _, server = ensure_auth()
     thumb_path = thumb if thumb.startswith('/') else f'/{thumb}'
     uris_to_try = candidate_server_uris(server)
+    server_key = str(server.get('client_identifier') or server.get('name') or 'default')
+    now_ts = time.monotonic()
+    preferred_uri = PLEX_IMAGE_BEST_URI_BY_SERVER.get(server_key)
+    if preferred_uri in uris_to_try:
+        uris_to_try = [preferred_uri, *[uri for uri in uris_to_try if uri != preferred_uri]]
+
+    filtered_uris = [uri for uri in uris_to_try if PLEX_IMAGE_URI_FAIL_UNTIL.get(uri, 0) <= now_ts]
+    if filtered_uris:
+        uris_to_try = filtered_uris
+
     headers = {
         'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
         'X-Plex-Token': server['token'],
@@ -941,9 +966,11 @@ def plex_image(thumb: str = Query(...)) -> Response:
             response = requests.get(
                 f'{uri}{thumb_path}',
                 headers=headers,
-                timeout=(6, 30),
+                timeout=(2, 20),
             )
             response.raise_for_status()
+            PLEX_IMAGE_BEST_URI_BY_SERVER[server_key] = uri
+            PLEX_IMAGE_URI_FAIL_UNTIL.pop(uri, None)
             content_type = response.headers.get('content-type', 'image/jpeg')
             return Response(
                 content=response.content,
@@ -956,6 +983,7 @@ def plex_image(thumb: str = Query(...)) -> Response:
             )
         except RequestException as exc:
             last_error = exc
+            PLEX_IMAGE_URI_FAIL_UNTIL[uri] = now_ts + 45.0
             continue
 
     raise HTTPException(status_code=404, detail='Plex image could not be loaded') from last_error
@@ -1204,6 +1232,10 @@ def show_seasons(
     except TMDbNotConfiguredError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # Upcoming-air-date lookup is expensive (one TMDb season-episodes call per season).
+    # Only resolve it when a filter actually depends on it.
+    requires_upcoming_lookup = bool(missing_only or new_only)
+
     items: list[dict[str, Any]] = []
     for season in seasons:
         season_no = int(season['season_number'])
@@ -1212,7 +1244,7 @@ def show_seasons(
         in_plex_complete = len(plex_eps) == total_eps
         count_overflow = len(plex_eps) > total_eps
         next_upcoming_air_date: str | None = None
-        if not in_plex_complete:
+        if requires_upcoming_lookup and not in_plex_complete:
             try:
                 season_episodes = get_tv_season_episodes(int(show_data['tmdb_show_id']), season_no)
             except TMDbNotConfiguredError as exc:

@@ -27,6 +27,17 @@ const DEFAULT_DOWNLOAD_PREFIX = {
   episode_mode: 'encoded_space',
   episode_end: '',
 };
+const APP_CACHE_VERSION = 1;
+const CACHE_KEYS = {
+  profile: 'pc_cache_profile_v1',
+  actors: 'pc_cache_actors_v1',
+  shows: 'pc_cache_shows_v1',
+};
+const CACHE_TTL_MS = {
+  profile: 1000 * 60 * 60 * 6,
+  actors: 1000 * 60 * 60 * 24,
+  shows: 1000 * 60 * 60 * 24,
+};
 
 const state = {
   session: null,
@@ -56,14 +67,44 @@ const state = {
   showsInitialFilter: localStorage.getItem('showsInitialFilter') || 'All',
   showsVisibleCount: ACTORS_BATCH_SIZE,
   showsImageObserver: null,
+  showsImageQueueToken: 0,
+  showsImageQueueRunning: false,
+  showsImageQueue: [],
+  showsImageQueueControllers: new Set(),
+  showsImageObjectUrls: new Set(),
   showSeasonsCache: {},
   showEpisodesCache: {},
+  showPrefetchControllers: new Set(),
   actorsInitialFilter: localStorage.getItem('actorsInitialFilter') || 'All',
   actorsVisibleCount: ACTORS_BATCH_SIZE,
   actorsImageObserver: null,
   imageCacheKey: localStorage.getItem('imageCacheKey') || '1',
   createCollectionBusy: false,
+  profileRefreshInFlight: false,
+  actorsRefreshInFlight: false,
+  showsRefreshInFlight: false,
+  profileLastRefreshAt: 0,
+  actorsLastRefreshAt: 0,
+  showsLastRefreshAt: 0,
 };
+
+const LOCAL_STORAGE_RESET_KEYS = [
+  'moviesInitialFilter',
+  'actorsSortBy',
+  'actorsSortDir',
+  'showsSortBy',
+  'showsSortDir',
+  'showsSeasonsSortDir',
+  'showsEpisodesSortDir',
+  'showsInitialFilter',
+  'actorsInitialFilter',
+  'moviesSortBy',
+  'moviesSortDir',
+  'imageCacheKey',
+  CACHE_KEYS.profile,
+  CACHE_KEYS.actors,
+  CACHE_KEYS.shows,
+];
 let plexAuthPopup = null;
 
 navProfile.addEventListener('click', () => routeTo('profile'));
@@ -79,6 +120,90 @@ function updateScrollState() {
 window.addEventListener('scroll', updateScrollState, { passive: true });
 updateScrollState();
 
+function cancelShowPrefetches() {
+  for (const controller of state.showPrefetchControllers) {
+    try {
+      controller.abort();
+    } catch {}
+  }
+  state.showPrefetchControllers.clear();
+}
+
+function resetShowImageQueue() {
+  state.showsImageQueueToken += 1;
+  state.showsImageQueueRunning = false;
+  state.showsImageQueue = [];
+  for (const controller of state.showsImageQueueControllers) {
+    try {
+      controller.abort();
+    } catch {}
+  }
+  state.showsImageQueueControllers.clear();
+  for (const url of state.showsImageObjectUrls) {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {}
+  }
+  state.showsImageObjectUrls.clear();
+}
+
+async function runShowImageQueue(token) {
+  if (state.showsImageQueueRunning) return;
+  state.showsImageQueueRunning = true;
+  try {
+    const maxConcurrent = 6;
+    const worker = async () => {
+      while (state.showsImageQueue.length > 0 && token === state.showsImageQueueToken) {
+        const item = state.showsImageQueue.shift();
+        if (!item) continue;
+        const { img, src } = item;
+        if (!img || !img.isConnected) continue;
+        if (!src || img.src === src) continue;
+
+        const isLocalApiImage = src.startsWith('/api/') || src.startsWith(window.location.origin);
+        if (!isLocalApiImage) {
+          // Fallback for external image URLs: load directly without fetch-abort.
+          if (token !== state.showsImageQueueToken || !img.isConnected) continue;
+          img.src = src;
+          continue;
+        }
+
+        const controller = new AbortController();
+        state.showsImageQueueControllers.add(controller);
+        try {
+          const response = await fetch(src, { signal: controller.signal, cache: 'force-cache' });
+          if (!response.ok) throw new Error(`Image load failed: ${response.status}`);
+          const blob = await response.blob();
+          if (token !== state.showsImageQueueToken || !img.isConnected) continue;
+          const oldObjectUrl = img.dataset.objectUrl || '';
+          const objectUrl = URL.createObjectURL(blob);
+          img.src = objectUrl;
+          img.dataset.objectUrl = objectUrl;
+          state.showsImageObjectUrls.add(objectUrl);
+          if (oldObjectUrl && state.showsImageObjectUrls.has(oldObjectUrl)) {
+            URL.revokeObjectURL(oldObjectUrl);
+            state.showsImageObjectUrls.delete(oldObjectUrl);
+          }
+        } catch (error) {
+          if (error?.name !== 'AbortError' && img.isConnected) {
+            // Keep placeholder on failed load.
+          }
+        } finally {
+          state.showsImageQueueControllers.delete(controller);
+        }
+      }
+    };
+
+    const workers = [];
+    for (let i = 0; i < maxConcurrent; i += 1) {
+      workers.push(worker());
+    }
+    await Promise.all(workers);
+  } finally {
+    state.showsImageQueueRunning = false;
+  }
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -91,6 +216,48 @@ async function api(path, options = {}) {
   }
 
   return response.json();
+}
+
+function readPersistentCache(cacheKey, ttlMs) {
+  try {
+    const raw = localStorage.getItem(cacheKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.version !== APP_CACHE_VERSION) return null;
+    if (!parsed.saved_at || !parsed.data) return null;
+    if (Date.now() - Number(parsed.saved_at) > ttlMs) return null;
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+function writePersistentCache(cacheKey, data) {
+  try {
+    localStorage.setItem(
+      cacheKey,
+      JSON.stringify({
+        version: APP_CACHE_VERSION,
+        saved_at: Date.now(),
+        data,
+      }),
+    );
+  } catch {}
+}
+
+function clearPersistentCache(cacheKey) {
+  try {
+    localStorage.removeItem(cacheKey);
+  } catch {}
+}
+
+function clearPrimaryDataCaches() {
+  clearPersistentCache(CACHE_KEYS.profile);
+  clearPersistentCache(CACHE_KEYS.actors);
+  clearPersistentCache(CACHE_KEYS.shows);
+  state.profileLastRefreshAt = 0;
+  state.actorsLastRefreshAt = 0;
+  state.showsLastRefreshAt = 0;
 }
 
 function applyImageFallback(img, fallbackSrc) {
@@ -156,7 +323,9 @@ function buildDownloadKeyword(rawText, mode) {
   const clean = sanitizeDownloadQuery(rawText);
   if (!clean) return '';
   const words = clean.split(' ').filter(Boolean);
-  return mode === 'hyphen' ? words.join('-') : words.join('%20');
+  if (mode === 'hyphen') return words.join('-');
+  if (mode === 'plus') return words.join('+');
+  return words.join('%20');
 }
 
 function buildDownloadLink(type, rawText) {
@@ -333,6 +502,8 @@ function setFullWidthGridMode(enabled) {
 }
 
 async function handleLocation() {
+  cancelShowPrefetches();
+  resetShowImageQueue();
   const path = window.location.pathname;
 
   if (!state.session) {
@@ -348,7 +519,7 @@ async function handleLocation() {
   }
 
   if (!state.profileLoaded) {
-    await loadProfileData(true);
+    await loadProfileData(false);
   }
   if (!state.profile?.tmdb_configured) {
     setFullWidthGridMode(false);
@@ -543,8 +714,14 @@ async function pollForAuth(pinId, statusEl) {
   throw new Error('Login timed out. Try again.');
 }
 
-async function renderProfile() {
-  const data = await loadProfileData();
+async function renderProfile(enableBackgroundRefresh = true) {
+  let data;
+  try {
+    data = await loadProfileData(false);
+  } catch (error) {
+    app.innerHTML = `<div class="empty">Failed to load profile: ${error.message}</div>`;
+    return;
+  }
   state.profile = data;
   const downloadPrefix = getDownloadPrefixSettings();
   const actorExampleText = buildDownloadExampleText('actor', downloadPrefix);
@@ -552,16 +729,15 @@ async function renderProfile() {
   const showExampleText = buildDownloadExampleText('show', downloadPrefix);
   const seasonExampleText = buildDownloadExampleText('season', downloadPrefix);
   const episodeExampleText = buildDownloadExampleText('episode', downloadPrefix);
-  const actorPrefixConfigured = Boolean((downloadPrefix.actor_start || '').trim() || (downloadPrefix.actor_end || '').trim());
-  const moviePrefixConfigured = Boolean((downloadPrefix.movie_start || '').trim() || (downloadPrefix.movie_end || '').trim());
-  const showPrefixConfigured = Boolean((downloadPrefix.show_start || '').trim() || (downloadPrefix.show_end || '').trim());
-  const seasonPrefixConfigured = Boolean((downloadPrefix.season_start || '').trim() || (downloadPrefix.season_end || '').trim());
-  const episodePrefixConfigured = Boolean((downloadPrefix.episode_start || '').trim() || (downloadPrefix.episode_end || '').trim());
 
   app.innerHTML = `
     <section class="profile">
       <div class="profile-header card">
-        <button id="reset-btn" class="secondary-btn profile-reset-btn">Reset</button>
+        <div class="profile-header-actions">
+          <div id="profile-save-status" class="meta no-margin"></div>
+          <button id="reset-btn" class="secondary-btn profile-reset-btn">Reset</button>
+          <button id="profile-save-btn" class="primary-btn profile-save-btn">Save</button>
+        </div>
         <img src="${withImageCacheKey(data.profile?.thumb) || 'https://placehold.co/120x120?text=Plex'}" alt="Profile" />
         <div>
           <h2>${data.profile?.username || 'Unknown user'}</h2>
@@ -577,97 +753,102 @@ async function renderProfile() {
                 )
                 .join('')}
             </select>
-            <button id="server-save-btn" class="secondary-btn">Save</button>
-            <span class="meta no-margin status-check">${data.current_server_client_identifier ? '✓' : ''}</span>
-            <span id="server-select-status" class="meta no-margin"></span>
           </div>
           <div class="row settings-row">
             <span class="meta no-margin settings-label settings-label-strong">TMDb key:</span>
             <input id="tmdb-key-input" type="text" name="tmdb_api_key_input" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-form-type="other" class="secondary-btn tmdb-key-input" placeholder="Set TMDb API Key in app" />
-            <button id="tmdb-save-btn" class="secondary-btn">Save</button>
-            <span class="meta no-margin status-check">${data.tmdb_configured ? '✓' : ''}</span>
-            <span id="tmdb-key-status" class="meta no-margin"></span>
           </div>
         </div>
       </div>
 
       <div class="card download-prefix-card">
-        <h3>Download Prefix</h3>
-        <div class="row settings-row">
-          <span class="meta no-margin prefix-label settings-label-strong">Actors prefix:</span>
-          <input id="actor-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.actor_start}" />
-          <select id="actor-prefix-format" class="secondary-btn prefix-format-select" aria-label="Actor keyword format">
-            <option value="encoded_space" ${downloadPrefix.actor_mode === 'encoded_space' ? 'selected' : ''}>Bruce%20Willis</option>
-            <option value="hyphen" ${downloadPrefix.actor_mode === 'hyphen' ? 'selected' : ''}>Bruce-Willis</option>
-          </select>
-          <input id="actor-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.actor_end}" />
-          <button id="actor-prefix-save-btn" class="secondary-btn">Save</button>
-          <span id="actor-prefix-check" class="meta no-margin status-check">${actorPrefixConfigured ? '✓' : ''}</span>
-          <span id="actor-prefix-status" class="meta no-margin"></span>
+        <div class="download-prefix-head">
+          <h3>Download Prefix</h3>
+          <div class="download-prefix-actions">
+            <div id="prefix-save-status" class="meta no-margin"></div>
+            <button id="prefix-reset-btn" class="secondary-btn" type="button">Reset</button>
+            <button id="prefix-save-btn" class="primary-btn" type="button">Save</button>
+          </div>
         </div>
-        <div id="actor-prefix-example" class="meta no-margin prefix-example ${actorExampleText ? '' : 'hidden'}">${actorExampleText}</div>
-        <div class="row settings-row">
-          <span class="meta no-margin prefix-label settings-label-strong">Film prefix:</span>
-          <input id="movie-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.movie_start}" />
-          <select id="movie-prefix-format" class="secondary-btn prefix-format-select" aria-label="Movie keyword format">
-            <option value="encoded_space" ${downloadPrefix.movie_mode === 'encoded_space' ? 'selected' : ''}>A%20Day%20to%20Die</option>
-            <option value="hyphen" ${downloadPrefix.movie_mode === 'hyphen' ? 'selected' : ''}>A-Day-to-Die</option>
-          </select>
-          <input id="movie-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.movie_end}" />
-          <button id="movie-prefix-save-btn" class="secondary-btn">Save</button>
-          <span id="movie-prefix-check" class="meta no-margin status-check">${moviePrefixConfigured ? '✓' : ''}</span>
-          <span id="movie-prefix-status" class="meta no-margin"></span>
+        <div class="prefix-section">
+          <div class="meta no-margin prefix-section-label settings-label-strong">Actors:</div>
+          <div id="actor-prefix-example" class="meta no-margin prefix-example ${actorExampleText ? '' : 'hidden'}">${actorExampleText}</div>
+          <div class="row prefix-section-controls">
+            <input id="actor-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.actor_start}" />
+            <select id="actor-prefix-format" class="secondary-btn prefix-format-select" aria-label="Actor keyword format">
+              <option value="encoded_space" ${downloadPrefix.actor_mode === 'encoded_space' ? 'selected' : ''}>Bruce%20Willis</option>
+              <option value="hyphen" ${downloadPrefix.actor_mode === 'hyphen' ? 'selected' : ''}>Bruce-Willis</option>
+              <option value="plus" ${downloadPrefix.actor_mode === 'plus' ? 'selected' : ''}>Bruce+Willis</option>
+            </select>
+            <input id="actor-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.actor_end}" />
+          </div>
         </div>
-        <div id="movie-prefix-example" class="meta no-margin prefix-example ${movieExampleText ? '' : 'hidden'}">${movieExampleText}</div>
-        <div class="row settings-row">
-          <span class="meta no-margin prefix-label settings-label-strong">Show prefix:</span>
-          <input id="show-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.show_start}" />
-          <select id="show-prefix-format" class="secondary-btn prefix-format-select" aria-label="Show keyword format">
-            <option value="encoded_space" ${downloadPrefix.show_mode === 'encoded_space' ? 'selected' : ''}>Breaking%20Bad</option>
-            <option value="hyphen" ${downloadPrefix.show_mode === 'hyphen' ? 'selected' : ''}>Breaking-Bad</option>
-          </select>
-          <input id="show-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.show_end}" />
-          <button id="show-prefix-save-btn" class="secondary-btn">Save</button>
-          <span id="show-prefix-check" class="meta no-margin status-check">${showPrefixConfigured ? '✓' : ''}</span>
-          <span id="show-prefix-status" class="meta no-margin"></span>
+
+        <div class="prefix-section">
+          <div class="meta no-margin prefix-section-label settings-label-strong">Film:</div>
+          <div id="movie-prefix-example" class="meta no-margin prefix-example ${movieExampleText ? '' : 'hidden'}">${movieExampleText}</div>
+          <div class="row prefix-section-controls">
+            <input id="movie-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.movie_start}" />
+            <select id="movie-prefix-format" class="secondary-btn prefix-format-select" aria-label="Movie keyword format">
+              <option value="encoded_space" ${downloadPrefix.movie_mode === 'encoded_space' ? 'selected' : ''}>A%20Day%20to%20Die</option>
+              <option value="hyphen" ${downloadPrefix.movie_mode === 'hyphen' ? 'selected' : ''}>A-Day-to-Die</option>
+              <option value="plus" ${downloadPrefix.movie_mode === 'plus' ? 'selected' : ''}>A+Day+to+Die</option>
+            </select>
+            <input id="movie-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.movie_end}" />
+          </div>
         </div>
-        <div id="show-prefix-example" class="meta no-margin prefix-example ${showExampleText ? '' : 'hidden'}">${showExampleText}</div>
-        <div class="row settings-row">
-          <span class="meta no-margin prefix-label settings-label-strong">Season prefix:</span>
-          <input id="season-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.season_start}" />
-          <select id="season-prefix-format" class="secondary-btn prefix-format-select" aria-label="Season keyword format">
-            <option value="encoded_space" ${downloadPrefix.season_mode === 'encoded_space' ? 'selected' : ''}>Breaking%20Bad%20s01</option>
-            <option value="hyphen" ${downloadPrefix.season_mode === 'hyphen' ? 'selected' : ''}>Breaking-Bad-s01</option>
-          </select>
-          <input id="season-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.season_end}" />
-          <button id="season-prefix-save-btn" class="secondary-btn">Save</button>
-          <span id="season-prefix-check" class="meta no-margin status-check">${seasonPrefixConfigured ? '✓' : ''}</span>
-          <span id="season-prefix-status" class="meta no-margin"></span>
+
+        <div class="prefix-section">
+          <div class="meta no-margin prefix-section-label settings-label-strong">Show:</div>
+          <div id="show-prefix-example" class="meta no-margin prefix-example ${showExampleText ? '' : 'hidden'}">${showExampleText}</div>
+          <div class="row prefix-section-controls">
+            <input id="show-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.show_start}" />
+            <select id="show-prefix-format" class="secondary-btn prefix-format-select" aria-label="Show keyword format">
+              <option value="encoded_space" ${downloadPrefix.show_mode === 'encoded_space' ? 'selected' : ''}>Breaking%20Bad</option>
+              <option value="hyphen" ${downloadPrefix.show_mode === 'hyphen' ? 'selected' : ''}>Breaking-Bad</option>
+              <option value="plus" ${downloadPrefix.show_mode === 'plus' ? 'selected' : ''}>Breaking+Bad</option>
+            </select>
+            <input id="show-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.show_end}" />
+          </div>
         </div>
-        <div id="season-prefix-example" class="meta no-margin prefix-example ${seasonExampleText ? '' : 'hidden'}">${seasonExampleText}</div>
-        <div class="row settings-row">
-          <span class="meta no-margin prefix-label settings-label-strong">Episode prefix:</span>
-          <input id="episode-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.episode_start}" />
-          <select id="episode-prefix-format" class="secondary-btn prefix-format-select" aria-label="Episode keyword format">
-            <option value="encoded_space" ${downloadPrefix.episode_mode === 'encoded_space' ? 'selected' : ''}>Breaking%20Bad%20s01e01</option>
-            <option value="hyphen" ${downloadPrefix.episode_mode === 'hyphen' ? 'selected' : ''}>Breaking-Bad-s01e01</option>
-          </select>
-          <input id="episode-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.episode_end}" />
-          <button id="episode-prefix-save-btn" class="secondary-btn">Save</button>
-          <span id="episode-prefix-check" class="meta no-margin status-check">${episodePrefixConfigured ? '✓' : ''}</span>
-          <span id="episode-prefix-status" class="meta no-margin"></span>
+
+        <div class="prefix-section">
+          <div class="meta no-margin prefix-section-label settings-label-strong">Season:</div>
+          <div id="season-prefix-example" class="meta no-margin prefix-example ${seasonExampleText ? '' : 'hidden'}">${seasonExampleText}</div>
+          <div class="row prefix-section-controls">
+            <input id="season-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.season_start}" />
+            <select id="season-prefix-format" class="secondary-btn prefix-format-select" aria-label="Season keyword format">
+              <option value="encoded_space" ${downloadPrefix.season_mode === 'encoded_space' ? 'selected' : ''}>Breaking%20Bad%20s01</option>
+              <option value="hyphen" ${downloadPrefix.season_mode === 'hyphen' ? 'selected' : ''}>Breaking-Bad-s01</option>
+              <option value="plus" ${downloadPrefix.season_mode === 'plus' ? 'selected' : ''}>Breaking+Bad+s01</option>
+            </select>
+            <input id="season-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.season_end}" />
+          </div>
         </div>
-        <div id="episode-prefix-example" class="meta no-margin prefix-example ${episodeExampleText ? '' : 'hidden'}">${episodeExampleText}</div>
+
+        <div class="prefix-section">
+          <div class="meta no-margin prefix-section-label settings-label-strong">Episodes:</div>
+          <div id="episode-prefix-example" class="meta no-margin prefix-example ${episodeExampleText ? '' : 'hidden'}">${episodeExampleText}</div>
+          <div class="row prefix-section-controls">
+            <input id="episode-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.episode_start}" />
+            <select id="episode-prefix-format" class="secondary-btn prefix-format-select" aria-label="Episode keyword format">
+              <option value="encoded_space" ${downloadPrefix.episode_mode === 'encoded_space' ? 'selected' : ''}>Breaking%20Bad%20s01e01</option>
+              <option value="hyphen" ${downloadPrefix.episode_mode === 'hyphen' ? 'selected' : ''}>Breaking-Bad-s01e01</option>
+              <option value="plus" ${downloadPrefix.episode_mode === 'plus' ? 'selected' : ''}>Breaking+Bad+s01e01</option>
+            </select>
+            <input id="episode-prefix-end" type="text" class="secondary-btn prefix-input" placeholder="End prefix" value="${downloadPrefix.episode_end}" />
+          </div>
+        </div>
       </div>
 
       <div class="card library-sync-card">
-        <h3>Library Sync</h3>
-        <p class="subtitle">Scan Plex libraries.</p>
-        <div class="row library-sync-actions">
-          <button id="scan-btn" class="primary-btn btn-with-icon">${scanIconTag()}<span>Scan Actors</span></button>
-          <button id="scan-shows-btn" class="primary-btn btn-with-icon">${scanIconTag()}<span>Scan Shows</span></button>
-          <span id="scan-status" class="meta"></span>
-          <span id="scan-shows-status" class="meta"></span>
+        <div class="library-sync-head">
+          <h3>Plex Library Scan</h3>
+          <div class="row library-sync-actions">
+            <button id="scan-reset-btn" class="secondary-btn">Reset</button>
+            <button id="scan-btn" class="primary-btn btn-with-icon">${scanIconTag()}<span>Scan Actors</span></button>
+            <button id="scan-shows-btn" class="primary-btn btn-with-icon">${scanIconTag()}<span>Scan Shows</span></button>
+          </div>
         </div>
         <section class="scan-log">
           <h4>Log</h4>
@@ -679,35 +860,56 @@ async function renderProfile() {
 
   document.getElementById('scan-btn').addEventListener('click', runScan);
   document.getElementById('scan-shows-btn').addEventListener('click', runShowScan);
+  document.getElementById('scan-reset-btn').addEventListener('click', resetScansOnly);
   document.getElementById('reset-btn').addEventListener('click', resetApp);
-  document.getElementById('tmdb-save-btn').addEventListener('click', saveTmdbKey);
-  const serverSelect = document.getElementById('server-select');
-  const serverSaveBtn = document.getElementById('server-save-btn');
-  if (serverSelect && serverSaveBtn) {
-    serverSaveBtn.addEventListener('click', () => {
-      selectServer(serverSelect.value);
-    });
-  }
+  document.getElementById('profile-save-btn').addEventListener('click', saveProfileSettings);
   const tmdbInput = document.getElementById('tmdb-key-input');
   if (tmdbInput && data.tmdb_api_key) {
     tmdbInput.value = data.tmdb_api_key;
   }
-  document.getElementById('actor-prefix-save-btn').addEventListener('click', saveActorPrefix);
-  document.getElementById('movie-prefix-save-btn').addEventListener('click', saveMoviePrefix);
-  document.getElementById('show-prefix-save-btn').addEventListener('click', saveShowPrefix);
-  document.getElementById('season-prefix-save-btn').addEventListener('click', saveSeasonPrefix);
-  document.getElementById('episode-prefix-save-btn').addEventListener('click', saveEpisodePrefix);
+  document.getElementById('prefix-save-btn').addEventListener('click', saveAllPrefixes);
+  document.getElementById('prefix-reset-btn').addEventListener('click', resetAllPrefixes);
   renderScanLogs(data.scan_logs || [], data.show_scan_logs || []);
+  if (enableBackgroundRefresh) {
+    refreshProfileInBackground();
+  }
 }
 
 async function loadProfileData(forceRefresh = false) {
   if (!forceRefresh && state.profileLoaded && state.profile) {
     return state.profile;
   }
+  if (!forceRefresh && !state.profileLoaded) {
+    const cached = readPersistentCache(CACHE_KEYS.profile, CACHE_TTL_MS.profile);
+    if (cached) {
+      state.profile = cached;
+      state.profileLoaded = true;
+      return cached;
+    }
+  }
   const data = await api('/api/profile');
   state.profile = data;
   state.profileLoaded = true;
+  writePersistentCache(CACHE_KEYS.profile, data);
   return data;
+}
+
+async function refreshProfileInBackground() {
+  if (state.profileRefreshInFlight) return;
+  if (Date.now() - state.profileLastRefreshAt < 60000) return;
+  state.profileRefreshInFlight = true;
+  try {
+    const data = await loadProfileData(true);
+    state.profile = data;
+    state.profileLastRefreshAt = Date.now();
+    if (window.location.pathname === '/') {
+      renderProfile(false);
+    }
+  } catch {
+    // Silent background refresh failure.
+  } finally {
+    state.profileRefreshInFlight = false;
+  }
 }
 
 async function selectServer(clientIdentifier) {
@@ -731,6 +933,7 @@ async function saveServerSelection(clientIdentifier, throwOnError = true) {
       method: 'POST',
       body: JSON.stringify({ client_identifier: clientIdentifier }),
     });
+    clearPrimaryDataCaches();
     return true;
   } catch (error) {
     if (throwOnError) {
@@ -740,235 +943,32 @@ async function saveServerSelection(clientIdentifier, throwOnError = true) {
   }
 }
 
-async function saveTmdbKey() {
-  const input = document.getElementById('tmdb-key-input');
-  const status = document.getElementById('tmdb-key-status');
-  const key = input?.value?.trim() || '';
-  if (!key) {
-    status.textContent = 'Enter a key first';
+async function resetScansOnly() {
+  if (!window.confirm('Reset all scan data only?')) {
     return;
   }
+  const scanStatus = document.getElementById('scan-status');
+  if (scanStatus) scanStatus.textContent = 'Resetting...';
   try {
-    await api('/api/tmdb/key', {
-      method: 'POST',
-      body: JSON.stringify({ api_key: key }),
-    });
-    input.value = '';
-    status.textContent = 'Saved';
-    state.profileLoaded = false;
-    await renderProfile();
-  } catch (error) {
-    status.textContent = error.message;
-  }
-}
-
-async function saveActorPrefix() {
-  const status = document.getElementById('actor-prefix-status');
-  const check = document.getElementById('actor-prefix-check');
-  const example = document.getElementById('actor-prefix-example');
-  status.textContent = 'Saving...';
-  const existing = getDownloadPrefixSettings();
-  const payload = {
-    actor_start: document.getElementById('actor-prefix-start').value.trim(),
-    actor_mode: document.getElementById('actor-prefix-format').value,
-    actor_end: document.getElementById('actor-prefix-end').value.trim(),
-    movie_start: existing.movie_start,
-    movie_mode: existing.movie_mode,
-    movie_end: existing.movie_end,
-    show_start: existing.show_start,
-    show_mode: existing.show_mode,
-    show_end: existing.show_end,
-    season_start: existing.season_start,
-    season_mode: existing.season_mode,
-    season_end: existing.season_end,
-    episode_start: existing.episode_start,
-    episode_mode: existing.episode_mode,
-    episode_end: existing.episode_end,
-  };
-  try {
-    const result = await api('/api/download-prefix', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    state.profile = { ...state.profile, download_prefix: result.download_prefix };
-    const configured = Boolean((result.download_prefix.actor_start || '').trim() || (result.download_prefix.actor_end || '').trim());
-    if (check) check.textContent = configured ? '✓' : '';
-    if (example) {
-      const text = buildDownloadExampleText('actor', result.download_prefix);
-      example.textContent = text;
-      example.classList.toggle('hidden', !text);
+    const result = await api('/api/scan/reset', { method: 'POST' });
+    clearPrimaryDataCaches();
+    state.actors = [];
+    state.shows = [];
+    state.actorsLoaded = false;
+    state.showsLoaded = false;
+    state.showSeasonsCache = {};
+    state.showEpisodesCache = {};
+    if (state.profile) {
+      state.profile = {
+        ...state.profile,
+        scan_logs: result.scan_logs || [],
+        show_scan_logs: result.show_scan_logs || [],
+      };
     }
-    status.textContent = 'Saved';
+    renderScanLogs(result.scan_logs || [], result.show_scan_logs || []);
+    if (scanStatus) scanStatus.textContent = 'Reset';
   } catch (error) {
-    status.textContent = error.message;
-  }
-}
-
-async function saveMoviePrefix() {
-  const status = document.getElementById('movie-prefix-status');
-  const check = document.getElementById('movie-prefix-check');
-  const example = document.getElementById('movie-prefix-example');
-  status.textContent = 'Saving...';
-  const existing = getDownloadPrefixSettings();
-  const payload = {
-    actor_start: existing.actor_start,
-    actor_mode: existing.actor_mode,
-    actor_end: existing.actor_end,
-    movie_start: document.getElementById('movie-prefix-start').value.trim(),
-    movie_mode: document.getElementById('movie-prefix-format').value,
-    movie_end: document.getElementById('movie-prefix-end').value.trim(),
-    show_start: existing.show_start,
-    show_mode: existing.show_mode,
-    show_end: existing.show_end,
-    season_start: existing.season_start,
-    season_mode: existing.season_mode,
-    season_end: existing.season_end,
-    episode_start: existing.episode_start,
-    episode_mode: existing.episode_mode,
-    episode_end: existing.episode_end,
-  };
-  try {
-    const result = await api('/api/download-prefix', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    state.profile = { ...state.profile, download_prefix: result.download_prefix };
-    const configured = Boolean((result.download_prefix.movie_start || '').trim() || (result.download_prefix.movie_end || '').trim());
-    if (check) check.textContent = configured ? '✓' : '';
-    if (example) {
-      const text = buildDownloadExampleText('movie', result.download_prefix);
-      example.textContent = text;
-      example.classList.toggle('hidden', !text);
-    }
-    status.textContent = 'Saved';
-  } catch (error) {
-    status.textContent = error.message;
-  }
-}
-
-async function saveShowPrefix() {
-  const status = document.getElementById('show-prefix-status');
-  const check = document.getElementById('show-prefix-check');
-  const example = document.getElementById('show-prefix-example');
-  status.textContent = 'Saving...';
-  const existing = getDownloadPrefixSettings();
-  const payload = {
-    actor_start: existing.actor_start,
-    actor_mode: existing.actor_mode,
-    actor_end: existing.actor_end,
-    movie_start: existing.movie_start,
-    movie_mode: existing.movie_mode,
-    movie_end: existing.movie_end,
-    show_start: document.getElementById('show-prefix-start').value.trim(),
-    show_mode: document.getElementById('show-prefix-format').value,
-    show_end: document.getElementById('show-prefix-end').value.trim(),
-    season_start: existing.season_start,
-    season_mode: existing.season_mode,
-    season_end: existing.season_end,
-    episode_start: existing.episode_start,
-    episode_mode: existing.episode_mode,
-    episode_end: existing.episode_end,
-  };
-  try {
-    const result = await api('/api/download-prefix', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    state.profile = { ...state.profile, download_prefix: result.download_prefix };
-    const configured = Boolean((result.download_prefix.show_start || '').trim() || (result.download_prefix.show_end || '').trim());
-    if (check) check.textContent = configured ? '✓' : '';
-    if (example) {
-      const text = buildDownloadExampleText('show', result.download_prefix);
-      example.textContent = text;
-      example.classList.toggle('hidden', !text);
-    }
-    status.textContent = 'Saved';
-  } catch (error) {
-    status.textContent = error.message;
-  }
-}
-
-async function saveSeasonPrefix() {
-  const status = document.getElementById('season-prefix-status');
-  const check = document.getElementById('season-prefix-check');
-  const example = document.getElementById('season-prefix-example');
-  status.textContent = 'Saving...';
-  const existing = getDownloadPrefixSettings();
-  const payload = {
-    actor_start: existing.actor_start,
-    actor_mode: existing.actor_mode,
-    actor_end: existing.actor_end,
-    movie_start: existing.movie_start,
-    movie_mode: existing.movie_mode,
-    movie_end: existing.movie_end,
-    show_start: existing.show_start,
-    show_mode: existing.show_mode,
-    show_end: existing.show_end,
-    season_start: document.getElementById('season-prefix-start').value.trim(),
-    season_mode: document.getElementById('season-prefix-format').value,
-    season_end: document.getElementById('season-prefix-end').value.trim(),
-    episode_start: existing.episode_start,
-    episode_mode: existing.episode_mode,
-    episode_end: existing.episode_end,
-  };
-  try {
-    const result = await api('/api/download-prefix', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    state.profile = { ...state.profile, download_prefix: result.download_prefix };
-    const configured = Boolean((result.download_prefix.season_start || '').trim() || (result.download_prefix.season_end || '').trim());
-    if (check) check.textContent = configured ? '✓' : '';
-    if (example) {
-      const text = buildDownloadExampleText('season', result.download_prefix);
-      example.textContent = text;
-      example.classList.toggle('hidden', !text);
-    }
-    status.textContent = 'Saved';
-  } catch (error) {
-    status.textContent = error.message;
-  }
-}
-
-async function saveEpisodePrefix() {
-  const status = document.getElementById('episode-prefix-status');
-  const check = document.getElementById('episode-prefix-check');
-  const example = document.getElementById('episode-prefix-example');
-  status.textContent = 'Saving...';
-  const existing = getDownloadPrefixSettings();
-  const payload = {
-    actor_start: existing.actor_start,
-    actor_mode: existing.actor_mode,
-    actor_end: existing.actor_end,
-    movie_start: existing.movie_start,
-    movie_mode: existing.movie_mode,
-    movie_end: existing.movie_end,
-    show_start: existing.show_start,
-    show_mode: existing.show_mode,
-    show_end: existing.show_end,
-    season_start: existing.season_start,
-    season_mode: existing.season_mode,
-    season_end: existing.season_end,
-    episode_start: document.getElementById('episode-prefix-start').value.trim(),
-    episode_mode: document.getElementById('episode-prefix-format').value,
-    episode_end: document.getElementById('episode-prefix-end').value.trim(),
-  };
-  try {
-    const result = await api('/api/download-prefix', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    state.profile = { ...state.profile, download_prefix: result.download_prefix };
-    const configured = Boolean((result.download_prefix.episode_start || '').trim() || (result.download_prefix.episode_end || '').trim());
-    if (check) check.textContent = configured ? '✓' : '';
-    if (example) {
-      const text = buildDownloadExampleText('episode', result.download_prefix);
-      example.textContent = text;
-      example.classList.toggle('hidden', !text);
-    }
-    status.textContent = 'Saved';
-  } catch (error) {
-    status.textContent = error.message;
+    if (scanStatus) scanStatus.textContent = error.message;
   }
 }
 
@@ -1016,6 +1016,106 @@ function showScanModal(message) {
   document.body.appendChild(modal);
   const okBtn = document.getElementById('scan-modal-ok');
   if (okBtn) okBtn.addEventListener('click', closeScanModal);
+}
+
+async function saveProfileSettings() {
+  const status = document.getElementById('profile-save-status');
+  const saveBtn = document.getElementById('profile-save-btn');
+  const serverSelect = document.getElementById('server-select');
+  const tmdbInput = document.getElementById('tmdb-key-input');
+  if (status) status.textContent = 'Saving...';
+  if (saveBtn) saveBtn.disabled = true;
+  try {
+    const selectedServer = serverSelect?.value?.trim();
+    if (selectedServer) {
+      await saveServerSelection(selectedServer, true);
+    }
+    const key = tmdbInput?.value?.trim() || '';
+    if (key) {
+      await api('/api/tmdb/key', {
+        method: 'POST',
+        body: JSON.stringify({ api_key: key }),
+      });
+    }
+    clearPrimaryDataCaches();
+    state.profileLoaded = false;
+    state.actorsLoaded = false;
+    state.showsLoaded = false;
+    await renderProfile();
+    const refreshedStatus = document.getElementById('profile-save-status');
+    if (refreshedStatus) refreshedStatus.textContent = 'Saved';
+  } catch (error) {
+    if (status) status.textContent = error.message;
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
+function getPrefixPayloadFromInputs() {
+  return {
+    actor_start: document.getElementById('actor-prefix-start')?.value?.trim() || '',
+    actor_mode: document.getElementById('actor-prefix-format')?.value || 'encoded_space',
+    actor_end: document.getElementById('actor-prefix-end')?.value?.trim() || '',
+    movie_start: document.getElementById('movie-prefix-start')?.value?.trim() || '',
+    movie_mode: document.getElementById('movie-prefix-format')?.value || 'encoded_space',
+    movie_end: document.getElementById('movie-prefix-end')?.value?.trim() || '',
+    show_start: document.getElementById('show-prefix-start')?.value?.trim() || '',
+    show_mode: document.getElementById('show-prefix-format')?.value || 'encoded_space',
+    show_end: document.getElementById('show-prefix-end')?.value?.trim() || '',
+    season_start: document.getElementById('season-prefix-start')?.value?.trim() || '',
+    season_mode: document.getElementById('season-prefix-format')?.value || 'encoded_space',
+    season_end: document.getElementById('season-prefix-end')?.value?.trim() || '',
+    episode_start: document.getElementById('episode-prefix-start')?.value?.trim() || '',
+    episode_mode: document.getElementById('episode-prefix-format')?.value || 'encoded_space',
+    episode_end: document.getElementById('episode-prefix-end')?.value?.trim() || '',
+  };
+}
+
+async function saveAllPrefixes() {
+  const status = document.getElementById('prefix-save-status');
+  const saveBtn = document.getElementById('prefix-save-btn');
+  if (status) status.textContent = 'Saving...';
+  if (saveBtn) saveBtn.disabled = true;
+  try {
+    const result = await api('/api/download-prefix', {
+      method: 'POST',
+      body: JSON.stringify(getPrefixPayloadFromInputs()),
+    });
+    state.profile = { ...state.profile, download_prefix: result.download_prefix };
+    writePersistentCache(CACHE_KEYS.profile, state.profile);
+    await renderProfile();
+    const refreshedStatus = document.getElementById('prefix-save-status');
+    if (refreshedStatus) refreshedStatus.textContent = 'Saved';
+  } catch (error) {
+    if (status) status.textContent = error.message;
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
+async function resetAllPrefixes() {
+  if (!window.confirm('Reset all Download Prefix fields?')) {
+    return;
+  }
+  const status = document.getElementById('prefix-save-status');
+  const resetBtn = document.getElementById('prefix-reset-btn');
+  if (status) status.textContent = 'Resetting...';
+  if (resetBtn) resetBtn.disabled = true;
+  try {
+    const result = await api('/api/download-prefix', {
+      method: 'POST',
+      body: JSON.stringify(DEFAULT_DOWNLOAD_PREFIX),
+    });
+    state.profile = { ...state.profile, download_prefix: result.download_prefix };
+    writePersistentCache(CACHE_KEYS.profile, state.profile);
+    await renderProfile();
+    const refreshedStatus = document.getElementById('prefix-save-status');
+    if (refreshedStatus) refreshedStatus.textContent = 'Reset';
+  } catch (error) {
+    if (status) status.textContent = error.message;
+  } finally {
+    if (resetBtn) resetBtn.disabled = false;
+  }
 }
 
 function showScanSuccessModal(message = 'Scan complete', showConfirm = false) {
@@ -1113,84 +1213,173 @@ function closeCreateCollectionModal() {
 }
 
 async function runScan() {
-  const status = document.getElementById('scan-status');
   const scanText = 'Scanning...';
-  status.classList.remove('success', 'error');
-  status.textContent = 'Scanning...';
   showScanModal(scanText);
 
   try {
     const result = await api('/api/scan/actors', { method: 'POST' });
+    clearPrimaryDataCaches();
     invalidateImageCache();
-    status.classList.add('success');
-    status.textContent = '✓';
     state.actorsLoaded = false;
     const showLogs = state.profile?.show_scan_logs || [];
     renderScanLogs(result.scan_logs || [], showLogs);
-    showScanSuccessModal('Scan complete');
-    setTimeout(closeScanModal, 700);
+    showScanSuccessModal('Scan complete', true);
   } catch (error) {
-    status.classList.remove('success');
-    status.classList.add('error');
-    status.textContent = error.message;
     closeScanModal();
   }
 }
 
 async function runShowScan() {
-  const status = document.getElementById('scan-shows-status');
   const scanText = 'Scanning...';
-  status.classList.remove('success', 'error');
-  status.textContent = 'Scanning...';
   showScanModal(scanText);
 
   try {
     const result = await api('/api/scan/shows', { method: 'POST' });
+    clearPrimaryDataCaches();
     invalidateImageCache();
-    status.classList.add('success');
-    status.textContent = '✓';
     state.showsLoaded = false;
     state.showSeasonsCache = {};
     state.showEpisodesCache = {};
-    showScanSuccessModal('Scan complete');
-    setTimeout(closeScanModal, 700);
+    showScanSuccessModal('Scan complete', true);
     state.profile = { ...state.profile, show_scan_logs: result.show_scan_logs || [] };
     const actorLogs = state.profile?.scan_logs || [];
     renderScanLogs(actorLogs, result.show_scan_logs || []);
   } catch (error) {
-    status.classList.remove('success');
-    status.classList.add('error');
-    status.textContent = error.message;
     closeScanModal();
   }
 }
 
 async function resetApp() {
-  if (!window.confirm('Reset all local app data? This clears Plex login, actor scans, and cached state.')) {
+  if (!window.confirm('Reset all app data? This will clear everything.')) {
     return;
   }
   await api('/api/reset', { method: 'POST' });
+  clearPrimaryDataCaches();
+  for (const key of LOCAL_STORAGE_RESET_KEYS) {
+    localStorage.removeItem(key);
+  }
   state.session = { authenticated: false };
   state.actors = [];
   state.shows = [];
   state.profile = null;
+  state.currentView = 'profile';
   state.actorsLoaded = false;
   state.showsLoaded = false;
   state.showSeasonsCache = {};
   state.showEpisodesCache = {};
   state.profileLoaded = false;
+  state.actorsSearchOpen = false;
+  state.actorsSearchQuery = '';
+  state.showsSearchOpen = false;
+  state.showsSearchQuery = '';
+  state.moviesSearchOpen = false;
+  state.moviesSearchQuery = '';
+  state.moviesInitialFilter = 'All';
+  state.actorsSortBy = 'name';
+  state.actorsSortDir = 'asc';
+  state.showsSortBy = 'name';
+  state.showsSortDir = 'asc';
+  state.showsSeasonsSortDir = 'asc';
+  state.showsEpisodesSortDir = 'asc';
+  state.showsMissingOnly = false;
+  state.showsInPlexOnly = false;
+  state.showsNewOnly = false;
+  state.showsInitialFilter = 'All';
+  state.showsVisibleCount = ACTORS_BATCH_SIZE;
+  state.actorsInitialFilter = 'All';
+  state.actorsVisibleCount = ACTORS_BATCH_SIZE;
+  state.imageCacheKey = '1';
+  state.createCollectionBusy = false;
+  if (state.actorsImageObserver) {
+    state.actorsImageObserver.disconnect();
+    state.actorsImageObserver = null;
+  }
+  if (state.showsImageObserver) {
+    state.showsImageObserver.disconnect();
+    state.showsImageObserver = null;
+  }
   history.pushState({}, '', '/');
   renderOnboarding();
 }
 
-async function renderActors() {
+async function loadActorsData(forceRefresh = false) {
+  if (!forceRefresh && state.actorsLoaded && Array.isArray(state.actors)) {
+    return { items: state.actors };
+  }
+  if (!forceRefresh && !state.actorsLoaded) {
+    const cached = readPersistentCache(CACHE_KEYS.actors, CACHE_TTL_MS.actors);
+    if (cached && Array.isArray(cached.items)) {
+      state.actors = cached.items;
+      state.actorsLoaded = true;
+      return cached;
+    }
+  }
+  const data = await api('/api/actors');
+  state.actors = Array.isArray(data.items) ? data.items : [];
+  state.actorsLoaded = true;
+  writePersistentCache(CACHE_KEYS.actors, { items: state.actors });
+  return { ...data, items: state.actors };
+}
+
+async function refreshActorsInBackground() {
+  if (state.actorsRefreshInFlight) return;
+  if (Date.now() - state.actorsLastRefreshAt < 60000) return;
+  state.actorsRefreshInFlight = true;
+  try {
+    await loadActorsData(true);
+    state.actorsLastRefreshAt = Date.now();
+    if (window.location.pathname === '/actors') {
+      renderActors(false);
+    }
+  } catch {
+    // Silent background refresh failure.
+  } finally {
+    state.actorsRefreshInFlight = false;
+  }
+}
+
+async function loadShowsData(forceRefresh = false) {
+  if (!forceRefresh && state.showsLoaded && Array.isArray(state.shows)) {
+    return { items: state.shows };
+  }
+  if (!forceRefresh && !state.showsLoaded) {
+    const cached = readPersistentCache(CACHE_KEYS.shows, CACHE_TTL_MS.shows);
+    if (cached && Array.isArray(cached.items)) {
+      state.shows = cached.items;
+      state.showsLoaded = true;
+      return cached;
+    }
+  }
+  const data = await api('/api/shows');
+  state.shows = Array.isArray(data.items) ? data.items : [];
+  state.showsLoaded = true;
+  writePersistentCache(CACHE_KEYS.shows, { items: state.shows });
+  return { ...data, items: state.shows };
+}
+
+async function refreshShowsInBackground() {
+  if (state.showsRefreshInFlight) return;
+  if (Date.now() - state.showsLastRefreshAt < 60000) return;
+  state.showsRefreshInFlight = true;
+  try {
+    await loadShowsData(true);
+    state.showsLastRefreshAt = Date.now();
+    if (window.location.pathname === '/shows') {
+      renderShows(false);
+    }
+  } catch {
+    // Silent background refresh failure.
+  } finally {
+    state.showsRefreshInFlight = false;
+  }
+}
+
+async function renderActors(enableBackgroundRefresh = true) {
   let data = { items: state.actors, last_scan_at: null };
   if (!state.actorsLoaded) {
-    data = await api('/api/actors');
-    state.actors = data.items;
-    state.actorsLoaded = true;
+    data = await loadActorsData(false);
   } else {
-    data.last_scan_at = state.profile?.scan_logs?.[0]?.scanned_at || null;
+    data = { items: state.actors, last_scan_at: state.profile?.scan_logs?.[0]?.scanned_at || null };
   }
 
   if (!state.actors.length) {
@@ -1406,14 +1595,17 @@ async function renderActors() {
 
   updateActorsSearchClear();
   renderActorsGrid();
+  if (enableBackgroundRefresh) {
+    refreshActorsInBackground();
+  }
 }
 
-async function renderShows() {
+async function renderShows(enableBackgroundRefresh = true) {
   let data = { items: state.shows, last_scan_at: null };
   if (!state.showsLoaded) {
-    data = await api('/api/shows');
-    state.shows = data.items;
-    state.showsLoaded = true;
+    data = await loadShowsData(false);
+  } else {
+    data = { items: state.shows, last_scan_at: null };
   }
 
   if (!state.shows.length) {
@@ -1578,21 +1770,8 @@ async function renderShows() {
       if (!isSearching && button.dataset.filter === state.showsInitialFilter) button.classList.add('active');
     }
 
-    if (state.showsImageObserver) {
-      state.showsImageObserver.disconnect();
-      state.showsImageObserver = null;
-    }
-    if ('IntersectionObserver' in window) {
-      state.showsImageObserver = new IntersectionObserver((entries, observer) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const img = entry.target;
-          const lazySrc = img.dataset.src;
-          if (lazySrc && img.src !== lazySrc) img.src = lazySrc;
-          observer.unobserve(img);
-        }
-      }, { rootMargin: '180px 0px' });
-    }
+    resetShowImageQueue();
+    const queueToken = state.showsImageQueueToken;
 
     grid.innerHTML = '';
     for (const show of renderItems) {
@@ -1639,8 +1818,7 @@ async function renderShows() {
       `;
       const poster = card.querySelector('.poster');
       applyImageFallback(poster, SHOW_PLACEHOLDER);
-      if (state.showsImageObserver) state.showsImageObserver.observe(poster);
-      else poster.src = showImage;
+      state.showsImageQueue.push({ img: poster, src: showImage });
       const downloadLink = card.querySelector('.badge-link');
       downloadLink.addEventListener('click', (event) => event.stopPropagation());
       const scanPillBtn = card.querySelector('.show-scan-pill');
@@ -1656,7 +1834,7 @@ async function renderShows() {
           });
           const updated = Array.isArray(result.items) ? result.items[0] : null;
           if (updated) applyShowMissingScanUpdate(updated);
-          showScanSuccessModal('Missing scan updated for this show.', true);
+          showScanSuccessModal('Show updated', true);
           renderShows();
         } catch (error) {
           closeScanModal();
@@ -1668,6 +1846,8 @@ async function renderShows() {
       card.addEventListener('click', () => routeTo('show-detail', show.show_id));
       grid.appendChild(card);
     }
+
+    void runShowImageQueue(queueToken);
 
     const remaining = visible.length - renderItems.length;
     if (remaining > 0) {
@@ -1767,7 +1947,7 @@ async function renderShows() {
           const msg = document.getElementById('scan-modal-msg');
           if (msg) msg.textContent = `Scanned ${scanned}/${total} shows`;
         }
-        showScanSuccessModal(`Missing: ${missing}, Failed: ${failed}`, true);
+        showScanSuccessModal('Scan completed', true);
         state.showsLoaded = true;
         renderShows();
       } catch (error) {
@@ -1781,6 +1961,9 @@ async function renderShows() {
 
   updateShowsSearchClear();
   renderShowsGrid();
+  if (enableBackgroundRefresh) {
+    refreshShowsInBackground();
+  }
 }
 
 function showSeasonsCacheKey(showId, missingOnly, inPlexOnly, newOnly) {
@@ -1802,13 +1985,52 @@ async function getShowSeasonsData(showId, missingOnly, inPlexOnly, newOnly) {
 }
 
 async function getShowEpisodesData(showId, seasonNumber, missingOnly, inPlexOnly, newOnly) {
+  return getShowEpisodesDataWithOptions(showId, seasonNumber, missingOnly, inPlexOnly, newOnly, {});
+}
+
+async function getShowEpisodesDataWithOptions(showId, seasonNumber, missingOnly, inPlexOnly, newOnly, fetchOptions = {}) {
   const key = showEpisodesCacheKey(showId, seasonNumber, missingOnly, inPlexOnly, newOnly);
   if (state.showEpisodesCache[key]) {
     return state.showEpisodesCache[key];
   }
-  const data = await api(`/api/shows/${showId}/seasons/${seasonNumber}/episodes?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}&new_only=${newOnly}`);
+  const data = await api(
+    `/api/shows/${showId}/seasons/${seasonNumber}/episodes?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}&new_only=${newOnly}`,
+    fetchOptions,
+  );
   state.showEpisodesCache[key] = data;
   return data;
+}
+
+function startShowEpisodePrefetch(showId, seasonNumbers) {
+  if (!seasonNumbers.length) return;
+  const targetPath = `/shows/${showId}`;
+  const maxConcurrent = 3;
+  let index = 0;
+
+  const worker = async () => {
+    while (index < seasonNumbers.length) {
+      if (window.location.pathname !== targetPath) return;
+      const seasonNo = seasonNumbers[index];
+      index += 1;
+      const cacheKey = showEpisodesCacheKey(showId, seasonNo, false, false, false);
+      if (state.showEpisodesCache[cacheKey]) continue;
+      const controller = new AbortController();
+      state.showPrefetchControllers.add(controller);
+      try {
+        await getShowEpisodesDataWithOptions(showId, seasonNo, false, false, false, { signal: controller.signal });
+      } catch (error) {
+        if (error?.name !== 'AbortError') {
+          // Ignore background prefetch failures.
+        }
+      } finally {
+        state.showPrefetchControllers.delete(controller);
+      }
+    }
+  };
+
+  for (let i = 0; i < maxConcurrent; i += 1) {
+    void worker();
+  }
 }
 
 async function renderShowSeasons(showId) {
@@ -1900,12 +2122,10 @@ async function renderShowSeasons(showId) {
 
   // Prefetch unfiltered episodes in the background to reduce click delay.
   if (!missingOnly && !inPlexOnly && !newOnly) {
-    for (const season of data.items) {
-      const seasonNo = Number(season.season_number);
-      const cacheKey = showEpisodesCacheKey(showId, seasonNo, false, false, false);
-      if (state.showEpisodesCache[cacheKey]) continue;
-      getShowEpisodesData(showId, seasonNo, false, false, false).catch(() => {});
-    }
+    const seasonNumbers = data.items
+      .map((season) => Number(season.season_number))
+      .filter((num) => Number.isFinite(num) && num > 0);
+    startShowEpisodePrefetch(showId, seasonNumbers);
   }
 
   const seasons = [...data.items].sort((a, b) => {
