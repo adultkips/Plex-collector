@@ -9,6 +9,11 @@ Plex Collector is currently maintained as a single rolling `main` branch.
 | latest (`main`) | yes |
 | older commits/releases | no |
 
+## Runtime Support
+
+- Supported runtime: Python `3.11+`
+- Security fixes are validated against the currently supported runtime.
+
 ## Reporting a Vulnerability
 
 If you find a security issue, please do **not** open a public issue with exploit details.
@@ -22,8 +27,21 @@ If you find a security issue, please do **not** open a public issue with exploit
 
 You can expect an initial response within 7 days.
 
+## Disclosure Timeline
+
+- Initial triage: within 7 days
+- Fix target: as soon as practical based on severity
+- Public disclosure: after a fix or mitigation is available
+
 ## Scope Notes
 
 - This project is intended for localhost usage.
 - Sensitive values such as Plex tokens and TMDb keys are stored locally and should never be committed to Git.
 - Keep `.env` private and rotate keys immediately if leaked.
+
+## Repository Hardening Checklist
+
+- Enable 2FA on maintainer accounts.
+- Keep branch protection enabled for `main`.
+- Keep CodeQL and dependency scanning enabled in GitHub Actions.
+- Enable GitHub secret scanning and review alerts regularly.
