@@ -46,23 +46,18 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
   - Optimized navigation responsiveness across heavy lists.
 
 ## Screenshots
-Profile View
-![Profile](screenshots/profile.png)
-
-Actors View
-![Actors](screenshots/actors.png)
-
-Movies View
-![Movies](screenshots/movies.png)
-
-Shows View
-![Shows](screenshots/shows.png)
-
-Seasons View
-![Seasons](screenshots/seasons.png)
-
-Episodes View
-![Episodes](screenshots/episodes.png)
+<table>
+  <tr>
+    <td align="center"><img src="screenshots/profile.png" alt="Profile" width="300"><br><sub>Profile</sub></td>
+    <td align="center"><img src="screenshots/actors.png" alt="Actors" width="300"><br><sub>Actors</sub></td>
+    <td align="center"><img src="screenshots/movies.png" alt="Movies" width="300"><br><sub>Movies</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/shows.png" alt="Shows" width="300"><br><sub>Shows</sub></td>
+    <td align="center"><img src="screenshots/seasons.png" alt="Seasons" width="300"><br><sub>Seasons</sub></td>
+    <td align="center"><img src="screenshots/episodes.png" alt="Episodes" width="300"><br><sub>Episodes</sub></td>
+  </tr>
+</table>
 
 ## Requirements
 - Python 3.11+
