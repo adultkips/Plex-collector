@@ -18,7 +18,7 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
 - Actors experience:
   - Large poster grid sourced from Plex.
   - A-Z/All filtering and live search.
-  - Sorting by `Name` or `Amount` with ASC/DESC direction.
+  - Sorting by `Movies` or `Name` with ASC/DESC direction.
   - Direct actor download badge support via configurable prefix links.
 - Actor movie detail:
   - TMDb filmography matching against Plex library.
@@ -26,7 +26,7 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
   - Clickable TMDb movie cards and Plex/deep-link badges.
   - `Create Collection` action to build/update Plex collections from in-library matches.
 - Shows experience:
-  - Show grid with A-Z/All filtering, live search, and sorting (`Name`, `Amount`, `Date`).
+  - Show grid with A-Z/All filtering, live search, and sorting (`Date`, `Episodes`, `Missing`, `Name`).
   - Global `Scan Episodes` modal with scoped scan (`current filter`) or `Scan All`.
   - Per-show episode scan pill with last-scan date and quick refresh.
   - Visual status badges and borders for `Missing`, `In Plex`, and `NEW`.
@@ -61,7 +61,7 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
 
 ## Requirements
 - Python 3.11+
-- Plex account with access to a Plex server
+- Plex account with access to a Plex server (local network reachable)
 - TMDb API key
 - Windows environment for the included launcher scripts (`Install.bat`, `start_server.bat`)
 
