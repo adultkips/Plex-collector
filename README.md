@@ -30,11 +30,11 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
   - Global `Scan Episodes` modal with scoped scan (`current filter`) or `Scan All`.
   - Per-show episode scan pill with last-scan date and quick refresh.
   - Visual status badges and borders for `Missing`, `In Plex`, and `NEW`.
-  - Filters for `!` (Missing), `✓` (In Plex), and `NEW`.
+  - Filters for `✓` (In Plex), `!` (Missing), `📅` (Upcoming), and `NEW`.
 - Seasons and episodes drill-down:
   - Show -> Season -> Episode navigation with fast cached transitions.
-  - Missing/In Plex/New filtering at deeper levels.
-  - Release-aware labels (`Released`, `Releasing`, `New episode`) with date formatting.
+  - In Plex/Missing/Upcoming/New filtering at deeper levels.
+  - Release-aware labels (`Released`, `Releasing`) with date formatting.
 - Download Prefix system:
   - Configurable start/format/end templates for `Actors`, `Movies`, `Shows`, `Seasons`, and `Episodes`.
   - Multiple keyword formats supported (`%20`, `-`, `+`) with live examples.
