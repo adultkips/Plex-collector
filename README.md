@@ -26,7 +26,7 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
   - Clickable TMDb movie cards and Plex/deep-link badges.
   - `Create Collection` action to build/update Plex collections from in-library matches.
 - Shows experience:
-  - Show grid with A-Z/All filtering, live search, and sorting (`Date`, `Episodes`, `Missing`, `Name`).
+  - Show grid with A-Z/All filtering, live search, and sorting (`Date`, `Episodes`, `Missing`, `Name`, `New`, `Upcoming`).
   - Global `Scan Episodes` modal with scoped scan (`current filter`) or `Scan All`.
   - Per-show episode scan pill with last-scan date and quick refresh.
   - Visual status badges and borders for `Missing`, `In Plex`, and `NEW`.

@@ -362,6 +362,11 @@ select.secondary-btn {
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.34);
 }
 
+.actor-card.has-upcoming {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.34);
+}
+
 .actor-card.has-mismatch {
   border-color: #f59e0b;
   box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.34);
@@ -386,6 +391,11 @@ select.secondary-btn {
 .movie-card.has-new {
   border-color: #3b82f6;
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.34);
+}
+
+.movie-card.has-upcoming {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.34);
 }
 
 .movie-card.has-mismatch {
@@ -726,6 +736,57 @@ body.is-scrolled .topbar {
   box-shadow: 0 6px 16px rgba(30, 64, 175, 0.45);
   z-index: 2;
   pointer-events: none;
+}
+
+.upcoming-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  border-radius: 999px;
+  background: #f59e0b;
+  color: #111111;
+  font-weight: 800;
+  line-height: 1;
+  padding: 4px 7px;
+  border: 1px solid #fbbf24;
+  box-shadow: 0 6px 16px rgba(133, 77, 14, 0.45);
+  z-index: 2;
+  pointer-events: none;
+  display: inline-grid;
+  place-items: center;
+}
+
+.status-badges {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: inline-flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.status-badges .new-badge,
+.status-badges .upcoming-badge,
+.status-badges .missing-badge {
+  position: static;
+  top: auto;
+  right: auto;
+}
+
+.upcoming-badge-icon,
+.calendar-filter-icon {
+  display: inline-grid;
+  place-items: center;
+}
+
+.upcoming-badge-icon svg,
+.calendar-filter-icon svg {
+  width: 13px;
+  height: 13px;
+  fill: currentColor;
 }
 
 .empty {

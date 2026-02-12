@@ -59,6 +59,9 @@ def init_db() -> None:
                 plex_web_url TEXT,
                 has_missing_episodes INTEGER,
                 missing_episode_count INTEGER,
+                missing_new_count INTEGER,
+                missing_old_count INTEGER,
+                missing_upcoming_count INTEGER,
                 missing_scan_at TEXT,
                 missing_upcoming_air_dates TEXT,
                 updated_at TEXT NOT NULL
@@ -105,6 +108,12 @@ def init_db() -> None:
             conn.execute('ALTER TABLE plex_shows ADD COLUMN has_missing_episodes INTEGER')
         if 'missing_episode_count' not in show_columns:
             conn.execute('ALTER TABLE plex_shows ADD COLUMN missing_episode_count INTEGER')
+        if 'missing_new_count' not in show_columns:
+            conn.execute('ALTER TABLE plex_shows ADD COLUMN missing_new_count INTEGER')
+        if 'missing_old_count' not in show_columns:
+            conn.execute('ALTER TABLE plex_shows ADD COLUMN missing_old_count INTEGER')
+        if 'missing_upcoming_count' not in show_columns:
+            conn.execute('ALTER TABLE plex_shows ADD COLUMN missing_upcoming_count INTEGER')
         if 'missing_scan_at' not in show_columns:
             conn.execute('ALTER TABLE plex_shows ADD COLUMN missing_scan_at TEXT')
         if 'missing_upcoming_air_dates' not in show_columns:
