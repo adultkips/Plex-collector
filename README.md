@@ -53,7 +53,7 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
     <td align="center"><img src="screenshots/movies.png" alt="Movies" width="300"><br><sub>Movies</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="screenshots/shows.png" alt="Shows" width="300"><br><sub>Shows</sub></td>
+    <td align="center"><img src="screenshots/shows-v2.png" alt="Shows" width="300"><br><sub>Shows</sub></td>
     <td align="center"><img src="screenshots/seasons.png" alt="Seasons" width="300"><br><sub>Seasons</sub></td>
     <td align="center"><img src="screenshots/episodes.png" alt="Episodes" width="300"><br><sub>Episodes</sub></td>
   </tr>
