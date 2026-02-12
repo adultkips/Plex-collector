@@ -25,6 +25,13 @@ def init_db() -> None:
                 appearances INTEGER NOT NULL,
                 tmdb_person_id INTEGER,
                 image_url TEXT,
+                movies_in_plex_count INTEGER,
+                missing_movie_count INTEGER,
+                missing_new_count INTEGER,
+                missing_upcoming_count INTEGER,
+                first_release_date TEXT,
+                next_upcoming_release_date TEXT,
+                missing_scan_at TEXT,
                 updated_at TEXT NOT NULL
             )
             '''
@@ -85,6 +92,21 @@ def init_db() -> None:
             '''
         )
         columns = {row[1] for row in conn.execute("PRAGMA table_info('plex_movies')").fetchall()}
+        actor_columns = {row[1] for row in conn.execute("PRAGMA table_info('actors')").fetchall()}
+        if 'movies_in_plex_count' not in actor_columns:
+            conn.execute('ALTER TABLE actors ADD COLUMN movies_in_plex_count INTEGER')
+        if 'missing_movie_count' not in actor_columns:
+            conn.execute('ALTER TABLE actors ADD COLUMN missing_movie_count INTEGER')
+        if 'missing_new_count' not in actor_columns:
+            conn.execute('ALTER TABLE actors ADD COLUMN missing_new_count INTEGER')
+        if 'missing_upcoming_count' not in actor_columns:
+            conn.execute('ALTER TABLE actors ADD COLUMN missing_upcoming_count INTEGER')
+        if 'first_release_date' not in actor_columns:
+            conn.execute('ALTER TABLE actors ADD COLUMN first_release_date TEXT')
+        if 'next_upcoming_release_date' not in actor_columns:
+            conn.execute('ALTER TABLE actors ADD COLUMN next_upcoming_release_date TEXT')
+        if 'missing_scan_at' not in actor_columns:
+            conn.execute('ALTER TABLE actors ADD COLUMN missing_scan_at TEXT')
         if 'original_title' not in columns:
             conn.execute('ALTER TABLE plex_movies ADD COLUMN original_title TEXT')
         if 'normalized_original_title' not in columns:

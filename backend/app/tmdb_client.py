@@ -71,6 +71,7 @@ def get_person_movie_credits(person_id: int) -> list[dict[str, Any]]:
                 'tmdb_id': movie.get('id'),
                 'title': title,
                 'year': year,
+                'release_date': release if release else None,
                 'poster_url': f'{TMDB_IMAGE_BASE}{poster_path}' if poster_path else None,
             }
         )

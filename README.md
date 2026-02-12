@@ -11,6 +11,10 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
 - Localhost-only architecture: all scans, matching, and state are handled locally on your machine.
 - Profile hub with centralized settings (`Server`, `TMDb key`, `Download Prefix`) plus reset actions.
 - Floating icon-only bottom navigation for fast switching between `Profile`, `Actors`, and `Shows`.
+- Download Prefix system:
+  - Configurable start/format/end templates for `Actors`, `Movies`, `Shows`, `Seasons`, and `Episodes`.
+  - Multiple keyword formats supported (`%20`, `-`, `+`) with live examples.
+  - Prefix reset/save controls at card level.
 - Combined Plex library scanning:
   - `Scan Actors` to index actors and movie links.
   - `Scan Shows` to index shows, seasons, and episodes.
@@ -18,38 +22,36 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
 - Actors experience:
   - Large poster grid sourced from Plex.
   - A-Z/All filtering and live search.
-  - Sorting by `Movies` or `Name` with ASC/DESC direction.
+  - Sorting by `Movies`, `Missing`, `Name`, `New`, and `Upcoming` with ASC/DESC direction.
+  - Global `Scan Movies` modal with scoped scan (`current filter`) or `Scan All`.
+  - Per-actor scan pill with last-scan date and quick refresh.
+  - Visual status badges and borders for `Missing`, `In Plex`, and `NEW`.
+  - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW`.
   - Direct actor download badge support via configurable prefix links.
 - Actor movie detail:
   - TMDb filmography matching against Plex library.
-  - Filters for `!` (Missing) and `✓` (In Plex).
+  - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW`.
+  - Sorting by `Date`, `Title`, `Missing`, `New`, and `Upcoming` with ASC/DESC direction.
   - Clickable TMDb movie cards and Plex/deep-link badges.
+  - Release date shown under each movie title (`DD.MM.YYYY`).
   - `Create Collection` action to build/update Plex collections from in-library matches.
 - Shows experience:
-  - Show grid with A-Z/All filtering, live search, and sorting (`Date`, `Episodes`, `Missing`, `Name`, `New`, `Upcoming`).
+  - Large poster grid sourced from Plex.
+  - A-Z/All filtering and live search.
+  - Sorting by `Movies`, `Missing`, `Name`, `New`, and `Upcoming` with ASC/DESC direction.
   - Global `Scan Episodes` modal with scoped scan (`current filter`) or `Scan All`.
   - Per-show episode scan pill with last-scan date and quick refresh.
   - Visual status badges and borders for `Missing`, `In Plex`, and `NEW`.
-  - Filters for `✓` (In Plex), `!` (Missing), `📅` (Upcoming), and `NEW`.
+  - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW`.
 - Seasons and episodes drill-down:
   - Show -> Season -> Episode navigation with fast cached transitions.
   - In Plex/Missing/Upcoming/New filtering at deeper levels.
-  - Release-aware labels (`Released`, `Releasing`) with date formatting.
-- Download Prefix system:
-  - Configurable start/format/end templates for `Actors`, `Movies`, `Shows`, `Seasons`, and `Episodes`.
-  - Multiple keyword formats supported (`%20`, `-`, `+`) with live examples.
-  - Prefix reset/save controls at card level.
-- Performance optimizations:
-  - Cache-first rendering for profile/actors/shows with background refresh.
-  - Smart cache invalidation after scans/resets/saves.
-  - Progressive image loading queues and request cancellation on route changes.
-  - Optimized navigation responsiveness across heavy lists.
 
 ## Screenshots
 <table>
   <tr>
     <td align="center"><img src="screenshots/profile.png" alt="Profile" width="300"><br><sub>Profile</sub></td>
-    <td align="center"><img src="screenshots/actors.png" alt="Actors" width="300"><br><sub>Actors</sub></td>
+    <td align="center"><img src="screenshots/actors-v2.png" alt="Actors" width="300"><br><sub>Actors</sub></td>
     <td align="center"><img src="screenshots/movies.png" alt="Movies" width="300"><br><sub>Movies</sub></td>
   </tr>
   <tr>
@@ -102,4 +104,6 @@ Open `http://127.0.0.1:8787`.
   - why it changed
   - how it was tested
 - Update README/screenshots when user-facing behavior changes.
+
+
 

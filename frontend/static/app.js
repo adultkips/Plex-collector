@@ -10,6 +10,7 @@ const PLEX_LOGO_PATH = '/assets/plexlogo.png';
 const SCAN_ICON_PATH = "M20 5v5h-5l1.9-1.9A6.98 6.98 0 0 0 12 6a7 7 0 0 0-6.93 6h-2.02A9.01 9.01 0 0 1 12 4c2.21 0 4.24.8 5.8 2.12L20 4v1Zm-16 9h5l-1.9 1.9A6.98 6.98 0 0 0 12 18a7 7 0 0 0 6.93-6h2.02A9.01 9.01 0 0 1 12 20c-2.21 0-4.24-.8-5.8-2.12L4 20v-6Z";
 const CALENDAR_ICON_PATH = "M7 2h2v2h6V2h2v2h3v18H4V4h3V2Zm11 8H6v10h12V10Zm0-4H6v2h12V6Z";
 const ACTORS_BATCH_SIZE = 80;
+const SCAN_WORKERS_CONCURRENCY = 8; // "Scan workers"
 const ACTOR_INITIAL_FILTERS = ['All', '0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Æ', 'Ø', 'Å', '#'];
 const DEFAULT_DOWNLOAD_PREFIX = {
   actor_start: '',
@@ -56,8 +57,18 @@ const state = {
   moviesSearchOpen: false,
   moviesSearchQuery: '',
   moviesInitialFilter: localStorage.getItem('moviesInitialFilter') || 'All',
-  actorsSortBy: localStorage.getItem('actorsSortBy') || 'name',
+  actorsSortBy: (() => {
+    const stored = localStorage.getItem('actorsSortBy') || 'name';
+    if (stored === 'amount') return 'movies';
+    if (stored === 'date') return 'name';
+    if (['movies', 'missing', 'name', 'new', 'upcoming'].includes(stored)) return stored;
+    return 'name';
+  })(),
   actorsSortDir: localStorage.getItem('actorsSortDir') || 'asc',
+  actorsMissingOnly: false,
+  actorsInPlexOnly: false,
+  actorsNewOnly: false,
+  actorsUpcomingOnly: false,
   showsSortBy: (() => {
     const stored = localStorage.getItem('showsSortBy') || 'name';
     if (stored === 'amount') return 'episodes';
@@ -441,6 +452,17 @@ function compareActorNames(a, b) {
   return (a?.name || '').localeCompare(b?.name || '', 'en', { sensitivity: 'base' });
 }
 
+function getActorPrimaryStatus(actor) {
+  const newCount = Number.isFinite(Number(actor?.missing_new_count)) ? Number(actor.missing_new_count) : 0;
+  const missingCount = Number.isFinite(Number(actor?.missing_movie_count)) ? Number(actor.missing_movie_count) : 0;
+  const upcomingCount = Number.isFinite(Number(actor?.missing_upcoming_count)) ? Number(actor.missing_upcoming_count) : 0;
+  if (newCount > 0) return 'new';
+  if (upcomingCount > 0) return 'upcoming';
+  if (missingCount > 0) return 'missing';
+  if (Boolean(actor?.missing_scan_at)) return 'in_plex';
+  return 'unknown';
+}
+
 function formatScanDateOnly(value) {
   if (!value) return 'Not scanned';
   const date = new Date(value);
@@ -528,6 +550,28 @@ function applyShowMissingScanUpdate(updated) {
   current.missing_upcoming_air_dates = Array.isArray(updated.missing_upcoming_air_dates)
     ? updated.missing_upcoming_air_dates
     : (current.missing_upcoming_air_dates || []);
+}
+
+function applyActorMissingScanUpdate(updated) {
+  if (!updated || !updated.actor_id) return;
+  const idx = state.actors.findIndex((a) => String(a.actor_id) === String(updated.actor_id));
+  if (idx < 0) return;
+  const current = state.actors[idx];
+  current.movies_in_plex_count = Number.isFinite(Number(updated.movies_in_plex_count))
+    ? Number(updated.movies_in_plex_count)
+    : (current.movies_in_plex_count ?? null);
+  current.missing_movie_count = Number.isFinite(Number(updated.missing_movie_count))
+    ? Number(updated.missing_movie_count)
+    : (current.missing_movie_count ?? null);
+  current.missing_new_count = Number.isFinite(Number(updated.missing_new_count))
+    ? Number(updated.missing_new_count)
+    : (current.missing_new_count ?? null);
+  current.missing_upcoming_count = Number.isFinite(Number(updated.missing_upcoming_count))
+    ? Number(updated.missing_upcoming_count)
+    : (current.missing_upcoming_count ?? null);
+  current.first_release_date = updated.first_release_date || current.first_release_date || null;
+  current.next_upcoming_release_date = updated.next_upcoming_release_date || current.next_upcoming_release_date || null;
+  current.missing_scan_at = updated.missing_scan_at || current.missing_scan_at || null;
 }
 
 function routeTo(view, actorId = null) {
@@ -1223,6 +1267,51 @@ function chooseShowMissingScanMode(scopedCount, allCount) {
   });
 }
 
+async function runScanWorkers({
+  ids,
+  label,
+  workerFn,
+  onUpdate,
+  concurrency = SCAN_WORKERS_CONCURRENCY,
+}) {
+  const total = ids.length;
+  let cursor = 0;
+  let completed = 0;
+  let fatalError = null;
+
+  const safeConcurrency = Math.max(1, Math.min(Number(concurrency) || 1, total || 1));
+
+  const updateProgress = () => {
+    const msg = document.getElementById('scan-modal-msg');
+    if (msg) msg.textContent = `Scanned ${completed}/${total} ${label}`;
+  };
+
+  updateProgress();
+
+  const worker = async () => {
+    while (true) {
+      if (fatalError) return;
+      const idx = cursor;
+      if (idx >= total) return;
+      cursor += 1;
+      const id = ids[idx];
+      try {
+        const result = await workerFn(id);
+        if (typeof onUpdate === 'function') onUpdate(result, id);
+      } catch (error) {
+        fatalError = error;
+        return;
+      } finally {
+        completed += 1;
+        updateProgress();
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: safeConcurrency }, () => worker()));
+  if (fatalError) throw fatalError;
+}
+
 function showCreateCollectionModal(message) {
   const modal = document.createElement('div');
   modal.className = 'scan-modal';
@@ -1336,6 +1425,10 @@ async function resetApp() {
   state.moviesInitialFilter = 'All';
   state.actorsSortBy = 'name';
   state.actorsSortDir = 'asc';
+  state.actorsMissingOnly = false;
+  state.actorsInPlexOnly = false;
+  state.actorsNewOnly = false;
+  state.actorsUpcomingOnly = false;
   state.showsSortBy = 'name';
   state.showsSortDir = 'asc';
   state.showsSeasonsSortDir = 'asc';
@@ -1452,6 +1545,11 @@ async function renderActors(enableBackgroundRefresh = true) {
     return;
   }
 
+  const hasMissingFlagData = state.actors.some((actor) => Number.isFinite(Number(actor.missing_movie_count)) && Number(actor.missing_movie_count) > 0);
+  const hasInPlexFlagData = state.actors.some((actor) => Boolean(actor.missing_scan_at) && getActorPrimaryStatus(actor) === 'in_plex');
+  const hasNewData = state.actors.some((actor) => Number.isFinite(Number(actor.missing_new_count)) && Number(actor.missing_new_count) > 0);
+  const hasUpcomingData = state.actors.some((actor) => Number.isFinite(Number(actor.missing_upcoming_count)) && Number(actor.missing_upcoming_count) > 0);
+
   app.innerHTML = `
     <div class="topbar">
       <div class="topbar-title">
@@ -1467,10 +1565,17 @@ async function renderActors(enableBackgroundRefresh = true) {
           <button id="actors-search-clear" class="search-clear-btn ${state.actorsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
         </div>
         <select id="actors-sort-by" class="secondary-btn" aria-label="Sort actors by">
-          <option value="amount" ${state.actorsSortBy === 'amount' ? 'selected' : ''}>Movies</option>
+          <option value="movies" ${state.actorsSortBy === 'movies' ? 'selected' : ''}>Movies</option>
+          <option value="missing" ${state.actorsSortBy === 'missing' ? 'selected' : ''}>Missing</option>
           <option value="name" ${state.actorsSortBy === 'name' ? 'selected' : ''}>Name</option>
+          <option value="new" ${state.actorsSortBy === 'new' ? 'selected' : ''}>New</option>
+          <option value="upcoming" ${state.actorsSortBy === 'upcoming' ? 'selected' : ''}>Upcoming</option>
         </select>
         <button id="actors-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.actorsSortDir === 'asc' ? '↑' : '↓'}</button>
+        ${hasInPlexFlagData || state.actorsInPlexOnly ? `<button id="actors-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.actorsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">✓</button>` : ''}
+        ${hasMissingFlagData || state.actorsMissingOnly ? `<button id="actors-missing-filter" class="toggle-btn has-pill-tooltip ${state.actorsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>` : ''}
+        ${hasUpcomingData || state.actorsUpcomingOnly ? `<button id="actors-upcoming-filter" class="toggle-btn has-pill-tooltip ${state.actorsUpcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>` : ''}
+        ${hasNewData || state.actorsNewOnly ? `<button id="actors-new-filter" class="toggle-btn has-pill-tooltip ${state.actorsNewOnly ? 'active' : ''}" data-tooltip="New">NEW</button>` : ''}
       </div>
     </div>
     <div class="alphabet-filter" id="actors-alphabet-filter">
@@ -1493,6 +1598,7 @@ async function renderActors(enableBackgroundRefresh = true) {
     </div>
     <section class="grid" id="actors-grid"></section>
     <div class="load-more-wrap" id="actors-load-more-wrap"></div>
+    <button id="actors-scan-missing-btn" class="collection-pill-btn btn-with-icon">${scanIconTag()}<span>Scan Movies</span></button>
   `;
 
   document.getElementById('actors-sort-by').addEventListener('change', (event) => {
@@ -1507,6 +1613,58 @@ async function renderActors(enableBackgroundRefresh = true) {
     state.actorsVisibleCount = ACTORS_BATCH_SIZE;
     renderActors();
   });
+  const actorsMissingBtn = document.getElementById('actors-missing-filter');
+  if (actorsMissingBtn) {
+    actorsMissingBtn.addEventListener('click', () => {
+      state.actorsMissingOnly = !state.actorsMissingOnly;
+      if (state.actorsMissingOnly) {
+        state.actorsInPlexOnly = false;
+        state.actorsNewOnly = false;
+        state.actorsUpcomingOnly = false;
+      }
+      state.actorsVisibleCount = ACTORS_BATCH_SIZE;
+      renderActors();
+    });
+  }
+  const actorsInPlexBtn = document.getElementById('actors-in-plex-filter');
+  if (actorsInPlexBtn) {
+    actorsInPlexBtn.addEventListener('click', () => {
+      state.actorsInPlexOnly = !state.actorsInPlexOnly;
+      if (state.actorsInPlexOnly) {
+        state.actorsMissingOnly = false;
+        state.actorsNewOnly = false;
+        state.actorsUpcomingOnly = false;
+      }
+      state.actorsVisibleCount = ACTORS_BATCH_SIZE;
+      renderActors();
+    });
+  }
+  const actorsNewBtn = document.getElementById('actors-new-filter');
+  if (actorsNewBtn) {
+    actorsNewBtn.addEventListener('click', () => {
+      state.actorsNewOnly = !state.actorsNewOnly;
+      if (state.actorsNewOnly) {
+        state.actorsMissingOnly = false;
+        state.actorsInPlexOnly = false;
+        state.actorsUpcomingOnly = false;
+      }
+      state.actorsVisibleCount = ACTORS_BATCH_SIZE;
+      renderActors();
+    });
+  }
+  const actorsUpcomingBtn = document.getElementById('actors-upcoming-filter');
+  if (actorsUpcomingBtn) {
+    actorsUpcomingBtn.addEventListener('click', () => {
+      state.actorsUpcomingOnly = !state.actorsUpcomingOnly;
+      if (state.actorsUpcomingOnly) {
+        state.actorsMissingOnly = false;
+        state.actorsInPlexOnly = false;
+        state.actorsNewOnly = false;
+      }
+      state.actorsVisibleCount = ACTORS_BATCH_SIZE;
+      renderActors();
+    });
+  }
 
   const grid = document.getElementById('actors-grid');
   const loadMoreWrap = document.getElementById('actors-load-more-wrap');
@@ -1515,7 +1673,33 @@ async function renderActors(enableBackgroundRefresh = true) {
     if (state.actorsSortBy === 'name') {
       return compareActorNames(a, b);
     }
-    return a.appearances - b.appearances;
+    if (state.actorsSortBy === 'movies') {
+      const aMovies = Number.isFinite(Number(a.movies_in_plex_count)) ? Number(a.movies_in_plex_count) : Number(a.appearances || 0);
+      const bMovies = Number.isFinite(Number(b.movies_in_plex_count)) ? Number(b.movies_in_plex_count) : Number(b.appearances || 0);
+      if (aMovies !== bMovies) return aMovies - bMovies;
+      return compareActorNames(a, b);
+    }
+    if (state.actorsSortBy === 'missing') {
+      const aMissing = Number.isFinite(Number(a.missing_movie_count)) ? Number(a.missing_movie_count) : 0;
+      const bMissing = Number.isFinite(Number(b.missing_movie_count)) ? Number(b.missing_movie_count) : 0;
+      if (aMissing !== bMissing) return aMissing - bMissing;
+      return compareActorNames(a, b);
+    }
+    if (state.actorsSortBy === 'new') {
+      const aNew = Number.isFinite(Number(a.missing_new_count)) ? Number(a.missing_new_count) : 0;
+      const bNew = Number.isFinite(Number(b.missing_new_count)) ? Number(b.missing_new_count) : 0;
+      if (aNew !== bNew) return aNew - bNew;
+      return compareActorNames(a, b);
+    }
+    if (state.actorsSortBy === 'upcoming') {
+      const aDate = String(a.next_upcoming_release_date || '');
+      const bDate = String(b.next_upcoming_release_date || '');
+      if (aDate && bDate && aDate !== bDate) return aDate.localeCompare(bDate);
+      if (aDate && !bDate) return -1;
+      if (!aDate && bDate) return 1;
+      return compareActorNames(a, b);
+    }
+    return compareActorNames(a, b);
   });
   if (state.actorsSortDir === 'desc') {
     sortedActors.reverse();
@@ -1527,9 +1711,24 @@ async function renderActors(enableBackgroundRefresh = true) {
     const filteredByInitial = state.actorsInitialFilter === 'All'
       ? sortedActors
       : sortedActors.filter((actor) => getActorInitialBucket(actor.name) === state.actorsInitialFilter);
-    const visible = query
+    let visible = query
       ? sortedActors.filter((actor) => actor.name.toLowerCase().includes(query))
       : filteredByInitial;
+    if (state.actorsMissingOnly) {
+      visible = visible.filter((actor) => {
+        const count = Number.isFinite(Number(actor.missing_movie_count)) ? Number(actor.missing_movie_count) : 0;
+        return count > 0;
+      });
+    }
+    if (state.actorsInPlexOnly) {
+      visible = visible.filter((actor) => getActorPrimaryStatus(actor) === 'in_plex');
+    }
+    if (state.actorsNewOnly) {
+      visible = visible.filter((actor) => Number.isFinite(Number(actor.missing_new_count)) && Number(actor.missing_new_count) > 0);
+    }
+    if (state.actorsUpcomingOnly) {
+      visible = visible.filter((actor) => Number.isFinite(Number(actor.missing_upcoming_count)) && Number(actor.missing_upcoming_count) > 0);
+    }
     const renderItems = visible.slice(0, state.actorsVisibleCount);
 
     for (const button of alphabetFilterEl.querySelectorAll('.alpha-btn')) {
@@ -1565,16 +1764,48 @@ async function renderActors(enableBackgroundRefresh = true) {
         ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
         : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
       const actorImage = withImageCacheKey(actor.image_url) || ACTOR_PLACEHOLDER;
+      const newCount = Number.isFinite(Number(actor.missing_new_count)) ? Number(actor.missing_new_count) : 0;
+      const missingCount = Number.isFinite(Number(actor.missing_movie_count)) ? Number(actor.missing_movie_count) : 0;
+      const upcomingCount = Number.isFinite(Number(actor.missing_upcoming_count)) ? Number(actor.missing_upcoming_count) : 0;
+      const hasNew = newCount > 0;
+      const hasUpcoming = upcomingCount > 0;
+      const hasMissing = missingCount > 0;
+      const actorStatus = hasNew ? 'new' : (hasUpcoming ? 'upcoming' : (hasMissing ? 'missing' : getActorPrimaryStatus(actor)));
+      const isInPlex = actorStatus === 'in_plex';
+      const upcomingText = actor.next_upcoming_release_date ? formatDateDdMmYyyy(actor.next_upcoming_release_date) : '';
+      const moviesInPlex = Number.isFinite(Number(actor.movies_in_plex_count)) ? Number(actor.movies_in_plex_count) : Number(actor.appearances || 0);
+      const scanDateText = formatScanDateOnly(actor.missing_scan_at);
       const card = document.createElement('article');
-      card.className = 'actor-card';
+      card.className = `actor-card${actorStatus === 'new' ? ' has-new' : (actorStatus === 'missing' ? ' has-missing' : (actorStatus === 'upcoming' ? ' has-upcoming' : ''))}`;
       card.innerHTML = `
         <div class="poster-wrap">
+          <button class="show-scan-pill" type="button" data-actor-id="${actor.actor_id}" title="Scan movies for this actor" aria-label="Scan movies for this actor">
+            <span class="show-scan-pill-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+                <path d="${SCAN_ICON_PATH}"></path>
+              </svg>
+            </span>
+            <span class="show-scan-pill-text">${scanDateText}</span>
+          </button>
           <img class="poster actor-poster-lazy" src="${ACTOR_PLACEHOLDER}" data-src="${actorImage}" alt="${actor.name}" loading="lazy" />
-          ${actorDownloadBadge}
+          ${(hasNew || hasUpcoming || hasMissing) ? `
+            <div class="status-badges">
+              ${hasNew ? '<span class="new-badge" title="New missing movies" aria-label="New missing movies">NEW</span>' : ''}
+              ${hasUpcoming ? `<span class="upcoming-badge" title="Upcoming movies" aria-label="Upcoming movies">${calendarIconTag('upcoming-badge-icon')}</span>` : ''}
+              ${hasMissing ? '<span class="missing-badge" title="Missing movies" aria-label="Missing movies">!</span>' : ''}
+            </div>
+          ` : ''}
+          ${isInPlex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
+          ${isInPlex
+            ? '<span class="badge-link badge-overlay">Plex ' + plexLogoTag() + '</span>'
+            : actorDownloadBadge}
         </div>
         <div class="caption">
           <div class="name">${actor.name}</div>
-          <div class="count">${actor.appearances} from Plex</div>
+          ${moviesInPlex > 0 ? `<div class="count">Movies: ${moviesInPlex} in Plex</div>` : ''}
+          ${missingCount > 0 ? `<div class="count">Missing: ${missingCount} movies</div>` : ''}
+          ${newCount > 0 ? `<div class="count">New: ${newCount} movies</div>` : ''}
+          ${upcomingText ? `<div class="count">Upcoming: ${upcomingText}</div>` : ''}
         </div>
       `;
       const poster = card.querySelector('.poster');
@@ -1587,6 +1818,31 @@ async function renderActors(enableBackgroundRefresh = true) {
       const downloadLink = card.querySelector('.badge-link');
       downloadLink.addEventListener('click', (event) => {
         event.stopPropagation();
+      });
+      const scanPillBtn = card.querySelector('.show-scan-pill');
+      scanPillBtn.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        if (scanPillBtn.disabled) return;
+        scanPillBtn.disabled = true;
+        showScanModal('Scanned 0/1 actors');
+        try {
+          const result = await api('/api/actors/missing-scan', {
+            method: 'POST',
+            body: JSON.stringify({ actor_ids: [String(actor.actor_id)] }),
+          });
+          const updates = Array.isArray(result.items) ? result.items : [];
+          for (const updated of updates) {
+            if (!updated) continue;
+            applyActorMissingScanUpdate(updated);
+          }
+          showScanSuccessModal('Actor updated', true);
+          renderActors();
+        } catch (error) {
+          closeScanModal();
+          window.alert(error.message);
+        } finally {
+          scanPillBtn.disabled = false;
+        }
       });
       card.addEventListener('click', () => routeTo('actor-detail', actor.actor_id));
       grid.appendChild(card);
@@ -1652,6 +1908,73 @@ async function renderActors(enableBackgroundRefresh = true) {
     renderActorsGrid();
     updateActorsSearchClear();
   });
+
+  const getScopedActors = () => {
+    const query = state.actorsSearchQuery.trim().toLowerCase();
+    const filteredByInitial = state.actorsInitialFilter === 'All'
+      ? sortedActors
+      : sortedActors.filter((actor) => getActorInitialBucket(actor.name) === state.actorsInitialFilter);
+    let scoped = query ? sortedActors.filter((actor) => actor.name.toLowerCase().includes(query)) : filteredByInitial;
+    if (state.actorsMissingOnly) {
+      scoped = scoped.filter((actor) => {
+        const count = Number.isFinite(Number(actor.missing_movie_count)) ? Number(actor.missing_movie_count) : 0;
+        return count > 0;
+      });
+    }
+    if (state.actorsInPlexOnly) scoped = scoped.filter((actor) => getActorPrimaryStatus(actor) === 'in_plex');
+    if (state.actorsNewOnly) scoped = scoped.filter((actor) => Number.isFinite(Number(actor.missing_new_count)) && Number(actor.missing_new_count) > 0);
+    if (state.actorsUpcomingOnly) scoped = scoped.filter((actor) => Number.isFinite(Number(actor.missing_upcoming_count)) && Number(actor.missing_upcoming_count) > 0);
+    return scoped;
+  };
+
+  const scanMissingBtn = document.getElementById('actors-scan-missing-btn');
+  if (scanMissingBtn) {
+    scanMissingBtn.addEventListener('click', async () => {
+      if (scanMissingBtn.disabled) return;
+      const scoped = getScopedActors();
+      const scopedIds = scoped.map((item) => String(item.actor_id)).filter(Boolean);
+      const allIds = state.actors.map((item) => String(item.actor_id)).filter(Boolean);
+      if (!allIds.length) {
+        window.alert('No actors available in current filter.');
+        return;
+      }
+      const choice = await chooseShowMissingScanMode(scopedIds.length, allIds.length);
+      if (!choice) return;
+      const actorIds = choice === 'all' ? allIds : scopedIds;
+      if (!actorIds.length) {
+        window.alert('No actors available in current filter.');
+        return;
+      }
+      scanMissingBtn.disabled = true;
+      const total = actorIds.length;
+      showScanModal(`Scanned 0/${total} actors`);
+      try {
+        await runScanWorkers({
+          ids: actorIds,
+          label: 'actors',
+          workerFn: (actorId) => api('/api/actors/missing-scan', {
+            method: 'POST',
+            body: JSON.stringify({ actor_ids: [actorId] }),
+          }),
+          onUpdate: (result) => {
+            const updates = Array.isArray(result?.items) ? result.items : [];
+            for (const updated of updates) {
+              if (!updated) continue;
+              applyActorMissingScanUpdate(updated);
+            }
+          },
+        });
+        showScanSuccessModal('Scan completed', true);
+        state.actorsLoaded = true;
+        renderActors();
+      } catch (error) {
+        closeScanModal();
+        window.alert(error.message);
+      } finally {
+        scanMissingBtn.disabled = false;
+      }
+    });
+  }
 
   updateActorsSearchClear();
   renderActorsGrid();
@@ -2055,28 +2378,24 @@ async function renderShows(enableBackgroundRefresh = true) {
         return;
       }
       scanMissingBtn.disabled = true;
-      let scanned = 0;
-      let missing = 0;
-      let failed = 0;
       const total = showIds.length;
-      showScanModal(`Scanned ${scanned}/${total} shows`);
+      showScanModal(`Scanned 0/${total} shows`);
       try {
-        for (const showId of showIds) {
-          const result = await api('/api/shows/missing-scan', {
+        await runScanWorkers({
+          ids: showIds,
+          label: 'shows',
+          workerFn: (showId) => api('/api/shows/missing-scan', {
             method: 'POST',
             body: JSON.stringify({ show_ids: [showId] }),
-          });
-          const updates = Array.isArray(result.items) ? result.items : [];
-          for (const updated of updates) {
-            if (!updated) continue;
-            if (updated.has_missing_episodes === true) missing += 1;
-            if (updated.has_missing_episodes === null || updated.has_missing_episodes === undefined) failed += 1;
-            applyShowMissingScanUpdate(updated);
-          }
-          scanned += 1;
-          const msg = document.getElementById('scan-modal-msg');
-          if (msg) msg.textContent = `Scanned ${scanned}/${total} shows`;
-        }
+          }),
+          onUpdate: (result) => {
+            const updates = Array.isArray(result?.items) ? result.items : [];
+            for (const updated of updates) {
+              if (!updated) continue;
+              applyShowMissingScanUpdate(updated);
+            }
+          },
+        });
         showScanSuccessModal('Scan completed', true);
         state.showsLoaded = true;
         renderShows();
@@ -2602,15 +2921,22 @@ async function renderActorDetail(actorId) {
   const search = new URLSearchParams(window.location.search);
   const missingOnly = search.get('missingOnly') === '1';
   const inPlexOnly = search.get('inPlexOnly') === '1';
-  const defaultMoviesSortBy = localStorage.getItem('moviesSortBy') || 'year';
+  const newOnly = search.get('newOnly') === '1';
+  const upcomingOnly = search.get('upcomingOnly') === '1';
+  const defaultMoviesSortBy = localStorage.getItem('moviesSortBy') || 'date';
   const defaultMoviesSortDir = localStorage.getItem('moviesSortDir') || 'desc';
-  const sortBy = search.get('sortBy') || defaultMoviesSortBy;
+  const rawSortBy = search.get('sortBy') || defaultMoviesSortBy;
+  const sortBy = rawSortBy === 'year' ? 'date' : rawSortBy;
   const sortDir = search.get('sortDir') || defaultMoviesSortDir;
 
-  const data = await api(`/api/actors/${actorId}/movies?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}`);
+  const data = await api(`/api/actors/${actorId}/movies?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}&new_only=${newOnly}&upcoming_only=${upcomingOnly}`);
   const actorName = data.actor.name;
   const inPlexCount = data.items.filter((item) => item.in_plex).length;
   const showCreateCollection = inPlexOnly && inPlexCount > 0;
+  const hasMissingData = data.items.some((item) => item.status === 'missing' || item.status === 'new');
+  const hasInPlexData = data.items.some((item) => item.in_plex);
+  const hasNewData = data.items.some((item) => item.status === 'new');
+  const hasUpcomingData = data.items.some((item) => item.status === 'upcoming');
   if (state.moviesSearchQuery) {
     state.moviesSearchOpen = true;
   }
@@ -2635,12 +2961,17 @@ async function renderActorDetail(actorId) {
           <button id="movies-search-clear" class="search-clear-btn ${state.moviesSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
         </div>
         <select id="movies-sort-by" class="secondary-btn" aria-label="Sort movies by">
+          <option value="date" ${sortBy === 'date' ? 'selected' : ''}>Date</option>
           <option value="title" ${sortBy === 'title' ? 'selected' : ''}>Title</option>
-          <option value="year" ${sortBy === 'year' ? 'selected' : ''}>Year</option>
+          <option value="missing" ${sortBy === 'missing' ? 'selected' : ''}>Missing</option>
+          <option value="new" ${sortBy === 'new' ? 'selected' : ''}>New</option>
+          <option value="upcoming" ${sortBy === 'upcoming' ? 'selected' : ''}>Upcoming</option>
         </select>
         <button id="movies-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${sortDir === 'asc' ? '↑' : '↓'}</button>
-        <button id="missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
-        <button id="in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">✓</button>
+        ${hasInPlexData || inPlexOnly ? `<button id="in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">✓</button>` : ''}
+        ${hasMissingData || missingOnly ? `<button id="missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>` : ''}
+        ${hasUpcomingData || upcomingOnly ? `<button id="movies-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>` : ''}
+        ${hasNewData || newOnly ? `<button id="movies-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New">NEW</button>` : ''}
       </div>
     </div>
     <div class="alphabet-filter" id="movies-alphabet-filter">
@@ -2673,31 +3004,63 @@ async function renderActorDetail(actorId) {
     renderActorDetail(actorId);
   };
 
-  document.getElementById('missing-toggle').addEventListener('click', () => {
-    const next = !missingOnly;
-    const params = new URLSearchParams();
-    if (next) {
-      params.set('missingOnly', '1');
-    } else if (inPlexOnly) {
-      params.set('inPlexOnly', '1');
-    }
-    params.set('sortBy', sortBy);
-    params.set('sortDir', sortDir);
-    pushActorDetailQuery(params);
-  });
+  const missingToggle = document.getElementById('missing-toggle');
+  if (missingToggle) {
+    missingToggle.addEventListener('click', () => {
+      const params = new URLSearchParams();
+      const next = !missingOnly;
+      if (next) params.set('missingOnly', '1');
+      else if (inPlexOnly) params.set('inPlexOnly', '1');
+      else if (newOnly) params.set('newOnly', '1');
+      else if (upcomingOnly) params.set('upcomingOnly', '1');
+      params.set('sortBy', sortBy);
+      params.set('sortDir', sortDir);
+      pushActorDetailQuery(params);
+    });
+  }
 
-  document.getElementById('in-plex-toggle').addEventListener('click', () => {
-    const next = !inPlexOnly;
-    const params = new URLSearchParams();
-    if (next) {
-      params.set('inPlexOnly', '1');
-    } else if (missingOnly) {
-      params.set('missingOnly', '1');
-    }
-    params.set('sortBy', sortBy);
-    params.set('sortDir', sortDir);
-    pushActorDetailQuery(params);
-  });
+  const inPlexToggle = document.getElementById('in-plex-toggle');
+  if (inPlexToggle) {
+    inPlexToggle.addEventListener('click', () => {
+      const params = new URLSearchParams();
+      const next = !inPlexOnly;
+      if (next) params.set('inPlexOnly', '1');
+      else if (missingOnly) params.set('missingOnly', '1');
+      else if (newOnly) params.set('newOnly', '1');
+      else if (upcomingOnly) params.set('upcomingOnly', '1');
+      params.set('sortBy', sortBy);
+      params.set('sortDir', sortDir);
+      pushActorDetailQuery(params);
+    });
+  }
+  const moviesNewToggle = document.getElementById('movies-new-toggle');
+  if (moviesNewToggle) {
+    moviesNewToggle.addEventListener('click', () => {
+      const params = new URLSearchParams();
+      const next = !newOnly;
+      if (next) params.set('newOnly', '1');
+      else if (missingOnly) params.set('missingOnly', '1');
+      else if (inPlexOnly) params.set('inPlexOnly', '1');
+      else if (upcomingOnly) params.set('upcomingOnly', '1');
+      params.set('sortBy', sortBy);
+      params.set('sortDir', sortDir);
+      pushActorDetailQuery(params);
+    });
+  }
+  const moviesUpcomingToggle = document.getElementById('movies-upcoming-toggle');
+  if (moviesUpcomingToggle) {
+    moviesUpcomingToggle.addEventListener('click', () => {
+      const params = new URLSearchParams();
+      const next = !upcomingOnly;
+      if (next) params.set('upcomingOnly', '1');
+      else if (missingOnly) params.set('missingOnly', '1');
+      else if (inPlexOnly) params.set('inPlexOnly', '1');
+      else if (newOnly) params.set('newOnly', '1');
+      params.set('sortBy', sortBy);
+      params.set('sortDir', sortDir);
+      pushActorDetailQuery(params);
+    });
+  }
 
   document.getElementById('movies-sort-by').addEventListener('change', (event) => {
     localStorage.setItem('moviesSortBy', event.target.value);
@@ -2757,7 +3120,35 @@ async function renderActorDetail(actorId) {
   }
 
   const sortedMovies = [...data.items].sort((a, b) => {
+    if (sortBy === 'date') {
+      const aDate = String(a.release_date || '');
+      const bDate = String(b.release_date || '');
+      if (aDate && bDate && aDate !== bDate) return aDate.localeCompare(bDate);
+      if (aDate && !bDate) return -1;
+      if (!aDate && bDate) return 1;
+      return (a.title || '').localeCompare(b.title || '');
+    }
     if (sortBy === 'title') {
+      return (a.title || '').localeCompare(b.title || '');
+    }
+    if (sortBy === 'missing') {
+      const av = (a.status === 'missing' || a.status === 'new') ? 1 : 0;
+      const bv = (b.status === 'missing' || b.status === 'new') ? 1 : 0;
+      if (av !== bv) return av - bv;
+      return (a.title || '').localeCompare(b.title || '');
+    }
+    if (sortBy === 'new') {
+      const av = a.status === 'new' ? 1 : 0;
+      const bv = b.status === 'new' ? 1 : 0;
+      if (av !== bv) return av - bv;
+      return (a.title || '').localeCompare(b.title || '');
+    }
+    if (sortBy === 'upcoming') {
+      const aDate = a.status === 'upcoming' ? String(a.release_date || '') : '';
+      const bDate = b.status === 'upcoming' ? String(b.release_date || '') : '';
+      if (aDate && bDate && aDate !== bDate) return aDate.localeCompare(bDate);
+      if (aDate && !bDate) return -1;
+      if (!aDate && bDate) return 1;
       return (a.title || '').localeCompare(b.title || '');
     }
     const ay = a.year ?? -9999;
@@ -2789,17 +3180,26 @@ async function renderActorDetail(actorId) {
     grid.innerHTML = '';
     for (const movie of visible) {
       const card = document.createElement('article');
-      const isMissing = !movie.in_plex;
-      card.className = `movie-card${isMissing ? ' has-missing' : ''}`;
+      const isNew = movie.status === 'new';
+      const isUpcoming = movie.status === 'upcoming';
+      const isMissing = movie.status === 'missing' || movie.status === 'new';
+      card.className = `movie-card${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}`;
       const tmdbUrl = movie.tmdb_id ? `https://www.themoviedb.org/movie/${movie.tmdb_id}` : null;
       const downloadUrl = buildDownloadLink('movie', movie.title);
       const movieDownloadBadge = downloadUrl
         ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
         : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
+      const releaseLabel = movie.release_date ? formatDateDdMmYyyy(movie.release_date) : 'No date';
       card.innerHTML = `
         <div class="poster-wrap">
           <img class="poster" src="${withImageCacheKey(movie.poster_url) || MOVIE_PLACEHOLDER}" alt="${movie.title}" loading="lazy" />
-          ${isMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
+          ${(isNew || isUpcoming || isMissing) ? `
+            <div class="status-badges">
+              ${isNew ? '<span class="new-badge" title="New missing movie" aria-label="New missing movie">NEW</span>' : ''}
+              ${isUpcoming ? `<span class="upcoming-badge" title="Upcoming movie" aria-label="Upcoming movie">${calendarIconTag('upcoming-badge-icon')}</span>` : ''}
+              ${isMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
+            </div>
+          ` : ''}
           ${movie.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
           ${
             movie.in_plex
@@ -2809,7 +3209,7 @@ async function renderActorDetail(actorId) {
         </div>
         <div class="caption">
           <div class="name">${movie.title}</div>
-          <div class="year">${movie.year || 'Unknown year'}</div>
+          <div class="year">${releaseLabel}</div>
         </div>
       `;
       if (tmdbUrl) {

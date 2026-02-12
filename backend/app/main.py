@@ -100,6 +100,10 @@ class ShowMissingScanPayload(BaseModel):
     show_ids: list[str]
 
 
+class ActorMissingScanPayload(BaseModel):
+    actor_ids: list[str]
+
+
 DEFAULT_DOWNLOAD_PREFIX = {
     'actor_start': '',
     'actor_mode': 'encoded_space',
@@ -179,15 +183,86 @@ def get_download_prefix_settings() -> dict[str, str]:
 
 def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str, Any]]) -> None:
     with get_conn() as conn:
+        existing_actor_rows = conn.execute(
+            '''
+            SELECT
+                actor_id,
+                tmdb_person_id,
+                image_url,
+                movies_in_plex_count,
+                missing_movie_count,
+                missing_new_count,
+                missing_upcoming_count,
+                first_release_date,
+                next_upcoming_release_date,
+                missing_scan_at
+            FROM actors
+            '''
+        ).fetchall()
+        existing_by_actor_id = {str(row['actor_id']): dict(row) for row in existing_actor_rows}
+        prepared_actors: list[dict[str, Any]] = []
+        for actor in actors:
+            prepared = dict(actor)
+            previous = existing_by_actor_id.get(str(prepared.get('actor_id')))
+            if previous:
+                if not prepared.get('tmdb_person_id') and previous.get('tmdb_person_id'):
+                    prepared['tmdb_person_id'] = previous.get('tmdb_person_id')
+                if not prepared.get('image_url') and previous.get('image_url'):
+                    prepared['image_url'] = previous.get('image_url')
+                prepared['movies_in_plex_count'] = previous.get('movies_in_plex_count')
+                prepared['missing_movie_count'] = previous.get('missing_movie_count')
+                prepared['missing_new_count'] = previous.get('missing_new_count')
+                prepared['missing_upcoming_count'] = previous.get('missing_upcoming_count')
+                prepared['first_release_date'] = previous.get('first_release_date')
+                prepared['next_upcoming_release_date'] = previous.get('next_upcoming_release_date')
+                prepared['missing_scan_at'] = previous.get('missing_scan_at')
+            else:
+                prepared['movies_in_plex_count'] = None
+                prepared['missing_movie_count'] = None
+                prepared['missing_new_count'] = None
+                prepared['missing_upcoming_count'] = None
+                prepared['first_release_date'] = None
+                prepared['next_upcoming_release_date'] = None
+                prepared['missing_scan_at'] = None
+            prepared_actors.append(prepared)
+
         conn.execute('DELETE FROM actors')
         conn.execute('DELETE FROM plex_movies')
 
         conn.executemany(
             '''
-            INSERT INTO actors(actor_id, name, appearances, tmdb_person_id, image_url, updated_at)
-            VALUES(:actor_id, :name, :appearances, :tmdb_person_id, :image_url, :updated_at)
+            INSERT INTO actors(
+                actor_id,
+                name,
+                appearances,
+                tmdb_person_id,
+                image_url,
+                movies_in_plex_count,
+                missing_movie_count,
+                missing_new_count,
+                missing_upcoming_count,
+                first_release_date,
+                next_upcoming_release_date,
+                missing_scan_at,
+                updated_at
+            )
+            VALUES(
+                :actor_id,
+                :name,
+                :appearances,
+                :tmdb_person_id,
+                :image_url,
+                :movies_in_plex_count,
+                :missing_movie_count,
+                :missing_new_count,
+                :missing_upcoming_count,
+                :first_release_date,
+                :next_upcoming_release_date,
+                :missing_scan_at,
+                :updated_at
+            )
             ''',
-            actors,
+            prepared_actors,
         )
         conn.executemany(
             '''
@@ -227,7 +302,10 @@ def _build_actor_movies_payload(
     actor_id: str,
     missing_only: bool,
     in_plex_only: bool,
+    new_only: bool = False,
+    upcoming_only: bool = False,
 ) -> dict[str, Any]:
+    now_dt = datetime.now(UTC)
     with get_conn() as conn:
         actor = conn.execute(
             'SELECT actor_id, name, tmdb_person_id, image_url FROM actors WHERE actor_id = ?',
@@ -312,10 +390,18 @@ def _build_actor_movies_payload(
             'library_section_id': matched['library_section_id'] if matched else None,
             'plex_web_url': matched['plex_web_url'] if matched else None,
         }
+        status = 'in_plex'
+        if not item['in_plex']:
+            status = _classify_missing_air_date(str(item.get('release_date') or '').strip() or None, now_dt=now_dt)
+        item['status'] = status
         include_item = True
-        if missing_only and item['in_plex']:
+        if missing_only and status not in {'missing', 'new'}:
             include_item = False
         if in_plex_only and not item['in_plex']:
+            include_item = False
+        if new_only and status != 'new':
+            include_item = False
+        if upcoming_only and status != 'upcoming':
             include_item = False
         if include_item:
             results.append(item)
@@ -325,6 +411,8 @@ def _build_actor_movies_payload(
         'items': results,
         'missing_only': missing_only,
         'in_plex_only': in_plex_only,
+        'new_only': new_only,
+        'upcoming_only': upcoming_only,
     }
 
 
@@ -352,26 +440,15 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
             prepared = dict(show)
             previous = existing_by_id.get(str(prepared.get('show_id')))
             if previous:
-                previous_tmdb = previous.get('tmdb_show_id')
-                current_tmdb = prepared.get('tmdb_show_id')
-                same_tmdb_match = previous_tmdb == current_tmdb
-                if same_tmdb_match:
-                    prepared['has_missing_episodes'] = previous.get('has_missing_episodes')
-                    prepared['missing_episode_count'] = previous.get('missing_episode_count')
-                    prepared['missing_new_count'] = previous.get('missing_new_count')
-                    prepared['missing_old_count'] = previous.get('missing_old_count')
-                    prepared['missing_upcoming_count'] = previous.get('missing_upcoming_count')
-                    prepared['missing_scan_at'] = previous.get('missing_scan_at')
-                    prepared['missing_upcoming_air_dates'] = previous.get('missing_upcoming_air_dates')
-                else:
-                    # TMDb match changed for this show; previous missing-state may be stale.
-                    prepared['has_missing_episodes'] = None
-                    prepared['missing_episode_count'] = None
-                    prepared['missing_new_count'] = None
-                    prepared['missing_old_count'] = None
-                    prepared['missing_upcoming_count'] = None
-                    prepared['missing_scan_at'] = None
-                    prepared['missing_upcoming_air_dates'] = None
+                if not prepared.get('tmdb_show_id') and previous.get('tmdb_show_id'):
+                    prepared['tmdb_show_id'] = previous.get('tmdb_show_id')
+                prepared['has_missing_episodes'] = previous.get('has_missing_episodes')
+                prepared['missing_episode_count'] = previous.get('missing_episode_count')
+                prepared['missing_new_count'] = previous.get('missing_new_count')
+                prepared['missing_old_count'] = previous.get('missing_old_count')
+                prepared['missing_upcoming_count'] = previous.get('missing_upcoming_count')
+                prepared['missing_scan_at'] = previous.get('missing_scan_at')
+                prepared['missing_upcoming_air_dates'] = previous.get('missing_upcoming_air_dates')
             else:
                 prepared['has_missing_episodes'] = None
                 prepared['missing_episode_count'] = None
@@ -841,6 +918,131 @@ def scan_shows() -> dict[str, Any]:
     }
 
 
+@app.post('/api/actors/missing-scan')
+def scan_actors_for_missing(payload: ActorMissingScanPayload) -> dict[str, Any]:
+    actor_ids = [str(item).strip() for item in payload.actor_ids if str(item).strip()]
+    if not actor_ids:
+        raise HTTPException(status_code=400, detail='No actors selected for missing scan')
+
+    unique_actor_ids = list(dict.fromkeys(actor_ids))
+    scanned_total = 0
+    failed_total = 0
+    missing_total = 0
+    now_iso = datetime.now(UTC).isoformat()
+    updates: list[tuple[Any, ...]] = []
+    results: list[dict[str, Any]] = []
+
+    for actor_id in unique_actor_ids:
+        scanned_total += 1
+        try:
+            actor_payload = _build_actor_movies_payload(actor_id, False, False, False, False)
+            items = actor_payload.get('items', [])
+            movies_in_plex_count = 0
+            missing_new_count = 0
+            missing_old_count = 0
+            missing_upcoming_count = 0
+            release_dates: list[str] = []
+            upcoming_dates: list[str] = []
+
+            for item in items:
+                if item.get('in_plex'):
+                    movies_in_plex_count += 1
+                status = item.get('status')
+                release_date = str(item.get('release_date') or '').strip() or None
+                if release_date:
+                    release_dates.append(release_date)
+                if status == 'new':
+                    missing_new_count += 1
+                elif status == 'missing':
+                    missing_old_count += 1
+                elif status == 'upcoming':
+                    missing_upcoming_count += 1
+                    if release_date:
+                        upcoming_dates.append(release_date)
+
+            missing_movie_count = missing_new_count + missing_old_count
+            first_release_date = min(release_dates) if release_dates else None
+            next_upcoming_release_date = min(upcoming_dates) if upcoming_dates else None
+            has_missing_movies = (missing_movie_count + missing_upcoming_count) > 0
+            if has_missing_movies:
+                missing_total += 1
+
+            updates.append(
+                (
+                    movies_in_plex_count,
+                    missing_movie_count,
+                    missing_new_count,
+                    missing_upcoming_count,
+                    first_release_date,
+                    next_upcoming_release_date,
+                    now_iso,
+                    now_iso,
+                    actor_id,
+                )
+            )
+            results.append(
+                {
+                    'actor_id': actor_id,
+                    'movies_in_plex_count': movies_in_plex_count,
+                    'missing_movie_count': missing_movie_count,
+                    'missing_new_count': missing_new_count,
+                    'missing_upcoming_count': missing_upcoming_count,
+                    'first_release_date': first_release_date,
+                    'next_upcoming_release_date': next_upcoming_release_date,
+                    'missing_scan_at': now_iso,
+                    'has_missing_movies': has_missing_movies,
+                    'error': None,
+                }
+            )
+        except TMDbNotConfiguredError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception:  # noqa: BLE001
+            logger.exception('Missing-movie scan failed for actor_id=%s', actor_id)
+            failed_total += 1
+            results.append(
+                {
+                    'actor_id': actor_id,
+                    'movies_in_plex_count': None,
+                    'missing_movie_count': None,
+                    'missing_new_count': None,
+                    'missing_upcoming_count': None,
+                    'first_release_date': None,
+                    'next_upcoming_release_date': None,
+                    'missing_scan_at': None,
+                    'has_missing_movies': None,
+                    'error': 'Unable to scan this actor right now.',
+                }
+            )
+
+    if updates:
+        with get_conn() as conn:
+            conn.executemany(
+                '''
+                UPDATE actors
+                SET
+                    movies_in_plex_count = ?,
+                    missing_movie_count = ?,
+                    missing_new_count = ?,
+                    missing_upcoming_count = ?,
+                    first_release_date = ?,
+                    next_upcoming_release_date = ?,
+                    missing_scan_at = ?,
+                    updated_at = ?
+                WHERE actor_id = ?
+                ''',
+                updates,
+            )
+            conn.commit()
+
+    return {
+        'ok': True,
+        'scanned': scanned_total,
+        'failed': failed_total,
+        'missing_actors': missing_total,
+        'items': results,
+    }
+
+
 @app.post('/api/shows/missing-scan')
 def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
     show_ids = [str(sid).strip() for sid in payload.show_ids if str(sid).strip()]
@@ -1104,7 +1306,20 @@ def actors() -> dict[str, Any]:
     with get_conn() as conn:
         rows = conn.execute(
             '''
-            SELECT actor_id, name, appearances, tmdb_person_id, image_url, updated_at
+            SELECT
+                actor_id,
+                name,
+                appearances,
+                tmdb_person_id,
+                image_url,
+                movies_in_plex_count,
+                missing_movie_count,
+                missing_new_count,
+                missing_upcoming_count,
+                first_release_date,
+                next_upcoming_release_date,
+                missing_scan_at,
+                updated_at
             FROM actors
             ORDER BY appearances DESC, name ASC
             '''
@@ -1121,14 +1336,16 @@ def actor_movies(
     actor_id: str,
     missing_only: bool = Query(False),
     in_plex_only: bool = Query(False),
+    new_only: bool = Query(False),
+    upcoming_only: bool = Query(False),
 ) -> dict[str, Any]:
-    return _build_actor_movies_payload(actor_id, missing_only, in_plex_only)
+    return _build_actor_movies_payload(actor_id, missing_only, in_plex_only, new_only, upcoming_only)
 
 
 @app.post('/api/collections/create-from-actor')
 def create_collection_from_actor(payload: CreateCollectionPayload) -> dict[str, Any]:
     _, server = ensure_auth()
-    actor_payload = _build_actor_movies_payload(payload.actor_id, False, True)
+    actor_payload = _build_actor_movies_payload(payload.actor_id, False, True, False, False)
     actor_name = actor_payload['actor']['name']
     collection_name = (payload.collection_name or actor_name).strip()
     if not collection_name:

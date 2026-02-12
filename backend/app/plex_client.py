@@ -320,7 +320,7 @@ def fetch_movie_library_snapshot(
             server_uri,
             server_token,
             f'/library/sections/{section_key}/all',
-            params={'type': 1, 'includeGuids': 1},
+            params={'type': 1},
         )
 
         for video in all_root.findall('Video'):
@@ -338,17 +338,6 @@ def fetch_movie_library_snapshot(
             seen_movie_rating_keys.add(rating_key)
             movie_rating_keys.append(rating_key)
 
-            tmdb_id: int | None = None
-            imdb_id: str | None = None
-            for guid in video.findall('Guid'):
-                guid_id = guid.attrib.get('id') or ''
-                if guid_id.startswith('tmdb://'):
-                    raw = guid_id.replace('tmdb://', '', 1)
-                    if raw.isdigit():
-                        tmdb_id = int(raw)
-                elif guid_id.startswith('imdb://'):
-                    imdb_id = guid_id.replace('imdb://', '', 1)
-
             movies.append(
                 {
                     'plex_rating_key': rating_key,
@@ -356,8 +345,8 @@ def fetch_movie_library_snapshot(
                     'title': title,
                     'original_title': original_title,
                     'year': year,
-                    'tmdb_id': tmdb_id,
-                    'imdb_id': imdb_id,
+                    'tmdb_id': None,
+                    'imdb_id': None,
                     'normalized_title': normalize_title(title),
                     'normalized_original_title': normalize_title(original_title) if original_title else None,
                     'plex_web_url': (
@@ -539,7 +528,7 @@ def fetch_show_library_snapshot(
             server_uri,
             server_token,
             f'/library/sections/{section_key}/all',
-            params={'type': 2, 'includeGuids': 1},
+            params={'type': 2},
         )
         for directory in shows_root.findall('Directory'):
             title = directory.attrib.get('title')
@@ -549,20 +538,12 @@ def fetch_show_library_snapshot(
 
             year_raw = directory.attrib.get('year')
             year = int(year_raw) if year_raw and year_raw.isdigit() else None
-            tmdb_show_id: int | None = None
-            for guid in directory.findall('Guid'):
-                guid_id = guid.attrib.get('id') or ''
-                if guid_id.startswith('tmdb://'):
-                    raw = guid_id.replace('tmdb://', '', 1)
-                    if raw.isdigit():
-                        tmdb_show_id = int(raw)
-
             shows_by_rating_key[rating_key] = {
                 'show_id': rating_key,
                 'plex_rating_key': rating_key,
                 'title': title,
                 'year': year,
-                'tmdb_show_id': tmdb_show_id,
+                'tmdb_show_id': None,
                 'normalized_title': normalize_title(title),
                 'image_url': proxied_thumb_url(directory.attrib.get('thumb')),
                 'plex_web_url': (
@@ -576,7 +557,7 @@ def fetch_show_library_snapshot(
             server_uri,
             server_token,
             f'/library/sections/{section_key}/all',
-            params={'type': 4, 'includeGuids': 1},
+            params={'type': 4},
         )
         for video in episodes_root.findall('Video'):
             episode_rating_key = video.attrib.get('ratingKey')
@@ -590,14 +571,6 @@ def fetch_show_library_snapshot(
                 continue
 
             title = video.attrib.get('title') or f'Episode {episode_raw}'
-            tmdb_episode_id: int | None = None
-            for guid in video.findall('Guid'):
-                guid_id = guid.attrib.get('id') or ''
-                if guid_id.startswith('tmdb://'):
-                    raw = guid_id.replace('tmdb://', '', 1)
-                    if raw.isdigit():
-                        tmdb_episode_id = int(raw)
-
             episodes.append(
                 {
                     'plex_rating_key': episode_rating_key,
@@ -606,7 +579,7 @@ def fetch_show_library_snapshot(
                     'episode_number': int(episode_raw),
                     'title': title,
                     'normalized_title': normalize_title(title),
-                    'tmdb_episode_id': tmdb_episode_id,
+                    'tmdb_episode_id': None,
                     'season_plex_web_url': (
                         f'https://app.plex.tv/desktop#!/server/{server_client_identifier}/details?key=%2Flibrary%2Fmetadata%2F{video.attrib.get("parentRatingKey")}'
                         if server_client_identifier and video.attrib.get('parentRatingKey')
