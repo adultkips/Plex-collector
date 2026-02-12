@@ -9,8 +9,8 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
 ## Features
 - First-run onboarding flow with `Login with Plex`, Plex server selection, and TMDb API key setup.
 - Localhost-only architecture: all scans, matching, and state are handled locally on your machine.
-- Profile hub with centralized settings (`Server`, `TMDb key`, `Download Prefix`) plus reset actions.
-- Floating icon-only bottom navigation for fast switching between `Profile`, `Actors`, and `Shows`.
+- Profile hub with centralized settings (`Server`, `TMDb key`, `Download Prefix`).
+- Floating icon-only bottom navigation `Profile`, `Actors`, and `Shows`.
 - Download Prefix system:
   - Configurable start/format/end templates for `Actors`, `Movies`, `Shows`, `Seasons`, and `Episodes`.
   - Multiple keyword formats supported (`%20`, `-`, `+`) with live examples.
@@ -22,42 +22,47 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
 - Actors experience:
   - Large poster grid sourced from Plex.
   - A-Z/All filtering and live search.
+  - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW`.
   - Sorting by `Movies`, `Missing`, `Name`, `New`, and `Upcoming` with ASC/DESC direction.
   - Global `Scan Movies` modal with scoped scan (`current filter`) or `Scan All`.
   - Per-actor scan pill with last-scan date and quick refresh.
-  - Visual status badges and borders for `Missing`, `In Plex`, and `NEW`.
-  - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW`.
+  - Visual status badges and borders for `In Plex`, `Missing`, `Upcoming` and `NEW`.
   - Direct actor download badge support via configurable prefix links.
 - Actor movie detail:
+  - Large poster grid sourced from Plex.
   - TMDb filmography matching against Plex library.
   - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW`.
   - Sorting by `Date`, `Title`, `Missing`, `New`, and `Upcoming` with ASC/DESC direction.
   - Clickable TMDb movie cards and Plex/deep-link badges.
-  - Release date shown under each movie title (`DD.MM.YYYY`).
+  - Visual status badges and borders for `In Plex`, `Missing`, `Upcoming` and `NEW`.
+  - Direct movie download badge support via configurable prefix links.
   - `Create Collection` action to build/update Plex collections from in-library matches.
 - Shows experience:
   - Large poster grid sourced from Plex.
   - A-Z/All filtering and live search.
-  - Sorting by `Movies`, `Missing`, `Name`, `New`, and `Upcoming` with ASC/DESC direction.
+  - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW`.
+  - Sorting by `Date`, `Episodes`, `Missing`, `Name`, `New`, and `Upcoming` with ASC/DESC direction.
   - Global `Scan Episodes` modal with scoped scan (`current filter`) or `Scan All`.
   - Per-show episode scan pill with last-scan date and quick refresh.
-  - Visual status badges and borders for `Missing`, `In Plex`, and `NEW`.
-  - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW`.
+  - Visual status badges and borders for `In Plex`, `Missing`, `Upcoming` and `NEW`.
+  - Direct show download badge support via configurable prefix links.
 - Seasons and episodes drill-down:
-  - Show -> Season -> Episode navigation with fast cached transitions.
-  - In Plex/Missing/Upcoming/New filtering at deeper levels.
+  - Show -> Season -> Episode navigation.
+  - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW` with ASC/DESC direction.
+  - Visual status badges and borders for `In Plex`, `Missing`, `Upcoming` and `NEW`.
+  - Direct season or episode download badge support via configurable prefix links.
 
 ## Screenshots
 <table>
   <tr>
-    <td align="center"><img src="screenshots/profile.png" alt="Profile" width="300"><br><sub>Profile</sub></td>
+    <td align="center"><img src="screenshots/profile-v2.png" alt="Profile" width="300"><br><sub>Profile</sub></td>
     <td align="center"><img src="screenshots/actors-v2.png" alt="Actors" width="300"><br><sub>Actors</sub></td>
-    <td align="center"><img src="screenshots/movies.png" alt="Movies" width="300"><br><sub>Movies</sub></td>
+    <td align="center"><img src="screenshots/movies-v2.png" alt="Movies" width="300"><br><sub>Movies</sub></td>
   </tr>
   <tr>
     <td align="center"><img src="screenshots/shows-v2.png" alt="Shows" width="300"><br><sub>Shows</sub></td>
-    <td align="center"><img src="screenshots/seasons.png" alt="Seasons" width="300"><br><sub>Seasons</sub></td>
-    <td align="center"><img src="screenshots/episodes.png" alt="Episodes" width="300"><br><sub>Episodes</sub></td>
+    <td align="center"><img src="screenshots/seasons-v2.png" alt="Seasons" width="300"><br><sub>Seasons</sub></td>
+    <td align="center"><img src="screenshots/episodes-v2.png" alt="Episodes" width="300"><br><sub>Episodes</sub></td>
   </tr>
 </table>
 
