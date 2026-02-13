@@ -104,6 +104,14 @@ class ActorMissingScanPayload(BaseModel):
     actor_ids: list[str]
 
 
+class IgnoreEpisodePayload(BaseModel):
+    ignored: bool
+
+
+class IgnoreMoviePayload(BaseModel):
+    ignored: bool
+
+
 DEFAULT_DOWNLOAD_PREFIX = {
     'actor_start': '',
     'actor_mode': 'encoded_space',
@@ -157,6 +165,138 @@ def _status_priority(status: str) -> int:
     if status == 'missing':
         return 1
     return 0
+
+
+def _get_ignored_episode_keys(
+    conn,
+    show_id: str,
+    season_number: int | None = None,
+) -> set[tuple[int, int]]:
+    if season_number is None:
+        rows = conn.execute(
+            '''
+            SELECT season_number, episode_number
+            FROM ignored_episodes
+            WHERE show_id = ?
+            ''',
+            (show_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            '''
+            SELECT season_number, episode_number
+            FROM ignored_episodes
+            WHERE show_id = ? AND season_number = ?
+            ''',
+            (show_id, season_number),
+        ).fetchall()
+    keys: set[tuple[int, int]] = set()
+    for row in rows:
+        try:
+            keys.add((int(row['season_number']), int(row['episode_number'])))
+        except (TypeError, ValueError):
+            continue
+    return keys
+
+
+def _cleanup_ignored_episode_keys(
+    conn,
+    show_id: str,
+    keep_keys: set[tuple[int, int]],
+) -> None:
+    existing = _get_ignored_episode_keys(conn, show_id)
+    remove_keys = existing - keep_keys
+    if not remove_keys:
+        return
+    conn.executemany(
+        '''
+        DELETE FROM ignored_episodes
+        WHERE show_id = ? AND season_number = ? AND episode_number = ?
+        ''',
+        [(show_id, season_no, ep_no) for season_no, ep_no in remove_keys],
+    )
+
+
+def _set_episode_ignored_state(
+    conn,
+    show_id: str,
+    season_number: int,
+    episode_number: int,
+    ignored: bool,
+) -> None:
+    now_iso = datetime.now(UTC).isoformat()
+    if ignored:
+        conn.execute(
+            '''
+            INSERT INTO ignored_episodes (show_id, season_number, episode_number, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(show_id, season_number, episode_number)
+            DO UPDATE SET updated_at = excluded.updated_at
+            ''',
+            (show_id, season_number, episode_number, now_iso, now_iso),
+        )
+        return
+    conn.execute(
+        '''
+        DELETE FROM ignored_episodes
+        WHERE show_id = ? AND season_number = ? AND episode_number = ?
+        ''',
+        (show_id, season_number, episode_number),
+    )
+
+
+def _get_ignored_movie_ids(conn, actor_id: str) -> set[int]:
+    rows = conn.execute(
+        '''
+        SELECT tmdb_movie_id
+        FROM ignored_movies
+        WHERE actor_id = ?
+        ''',
+        (actor_id,),
+    ).fetchall()
+    values: set[int] = set()
+    for row in rows:
+        try:
+            values.add(int(row['tmdb_movie_id']))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+def _cleanup_ignored_movie_ids(conn, actor_id: str, keep_ids: set[int]) -> None:
+    existing = _get_ignored_movie_ids(conn, actor_id)
+    remove_ids = existing - keep_ids
+    if not remove_ids:
+        return
+    conn.executemany(
+        '''
+        DELETE FROM ignored_movies
+        WHERE actor_id = ? AND tmdb_movie_id = ?
+        ''',
+        [(actor_id, tmdb_id) for tmdb_id in remove_ids],
+    )
+
+
+def _set_movie_ignored_state(conn, actor_id: str, tmdb_movie_id: int, ignored: bool) -> None:
+    now_iso = datetime.now(UTC).isoformat()
+    if ignored:
+        conn.execute(
+            '''
+            INSERT INTO ignored_movies (actor_id, tmdb_movie_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(actor_id, tmdb_movie_id)
+            DO UPDATE SET updated_at = excluded.updated_at
+            ''',
+            (actor_id, tmdb_movie_id, now_iso, now_iso),
+        )
+        return
+    conn.execute(
+        '''
+        DELETE FROM ignored_movies
+        WHERE actor_id = ? AND tmdb_movie_id = ?
+        ''',
+        (actor_id, tmdb_movie_id),
+    )
 
 
 def get_download_prefix_settings() -> dict[str, str]:
@@ -342,6 +482,7 @@ def _build_actor_movies_payload(
             FROM plex_movies
             '''
         ).fetchall()
+        ignored_movie_ids = _get_ignored_movie_ids(conn, actor_id)
 
     plex_by_key = {(r['normalized_title'], r['year']): dict(r) for r in plex_rows}
     plex_by_original_key = {
@@ -408,7 +549,10 @@ def _build_actor_movies_payload(
         status = 'in_plex'
         if not item['in_plex']:
             status = _classify_missing_air_date(str(item.get('release_date') or '').strip() or None, now_dt=now_dt)
+            if status == 'missing' and item.get('tmdb_id') is not None and int(item['tmdb_id']) in ignored_movie_ids:
+                status = 'ignored'
         item['status'] = status
+        item['ignored'] = status == 'ignored'
         include_item = True
         if missing_only and status not in {'missing', 'new'}:
             include_item = False
@@ -956,6 +1100,7 @@ def scan_actors_for_missing(payload: ActorMissingScanPayload) -> dict[str, Any]:
             missing_new_count = 0
             missing_old_count = 0
             missing_upcoming_count = 0
+            missing_old_tmdb_ids: set[int] = set()
             release_dates: list[str] = []
             upcoming_dates: list[str] = []
 
@@ -970,10 +1115,25 @@ def scan_actors_for_missing(payload: ActorMissingScanPayload) -> dict[str, Any]:
                     missing_new_count += 1
                 elif status == 'missing':
                     missing_old_count += 1
+                    if item.get('tmdb_id') is not None:
+                        try:
+                            missing_old_tmdb_ids.add(int(item['tmdb_id']))
+                        except (TypeError, ValueError):
+                            pass
+                elif status == 'ignored':
+                    if item.get('tmdb_id') is not None:
+                        try:
+                            missing_old_tmdb_ids.add(int(item['tmdb_id']))
+                        except (TypeError, ValueError):
+                            pass
                 elif status == 'upcoming':
                     missing_upcoming_count += 1
                     if release_date:
                         upcoming_dates.append(release_date)
+
+            with get_conn() as conn:
+                _cleanup_ignored_movie_ids(conn, actor_id, missing_old_tmdb_ids)
+                conn.commit()
 
             missing_movie_count = missing_new_count + missing_old_count
             first_release_date = min(release_dates) if release_dates else None
@@ -1168,11 +1328,21 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
                         tmdb_episode_air_dates[key] = air_date
 
             missing_episode_keys = tmdb_episode_set - plex_episode_set
+            with get_conn() as conn:
+                ignored_episode_keys = _get_ignored_episode_keys(conn, show_id)
+                # Auto-clean stale ignore rows: if an episode is now in Plex
+                # or no longer exists in TMDb data, drop the ignore marker.
+                _cleanup_ignored_episode_keys(conn, show_id, missing_episode_keys)
+                conn.commit()
+            effective_missing_episode_keys = {
+                key for key in missing_episode_keys
+                if key not in ignored_episode_keys
+            }
             missing_new_count = 0
             missing_old_count = 0
             missing_upcoming_count = 0
             now_dt = datetime.now(UTC)
-            for key in missing_episode_keys:
+            for key in effective_missing_episode_keys:
                 status = _classify_missing_air_date(tmdb_episode_air_dates.get(key), now_dt=now_dt)
                 if status == 'new':
                     missing_new_count += 1
@@ -1189,7 +1359,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
             upcoming_air_dates = sorted(
                 {
                     tmdb_episode_air_dates[key]
-                    for key in missing_episode_keys
+                    for key in effective_missing_episode_keys
                     if key in tmdb_episode_air_dates
                 }
             )
@@ -1355,6 +1525,35 @@ def actor_movies(
     upcoming_only: bool = Query(False),
 ) -> dict[str, Any]:
     return _build_actor_movies_payload(actor_id, missing_only, in_plex_only, new_only, upcoming_only)
+
+
+@app.post('/api/actors/{actor_id}/movies/{tmdb_movie_id}/ignore')
+def set_actor_movie_ignore(
+    actor_id: str,
+    tmdb_movie_id: int,
+    payload: IgnoreMoviePayload,
+) -> dict[str, Any]:
+    if tmdb_movie_id <= 0:
+        raise HTTPException(status_code=400, detail='Invalid TMDb movie id')
+    with get_conn() as conn:
+        actor = conn.execute(
+            '''
+            SELECT actor_id
+            FROM actors
+            WHERE actor_id = ?
+            ''',
+            (actor_id,),
+        ).fetchone()
+        if not actor:
+            raise HTTPException(status_code=404, detail='Actor not found')
+        _set_movie_ignored_state(conn, actor_id, tmdb_movie_id, payload.ignored)
+        conn.commit()
+    return {
+        'ok': True,
+        'actor_id': actor_id,
+        'tmdb_movie_id': tmdb_movie_id,
+        'ignored': bool(payload.ignored),
+    }
 
 
 @app.post('/api/collections/create-from-actor')
@@ -1577,6 +1776,7 @@ def show_seasons(
             ''',
             (show_id,),
         ).fetchall()
+        ignored_episode_keys = _get_ignored_episode_keys(conn, show_id)
 
     plex_by_season: dict[int, set[int]] = {}
     plex_season_urls: dict[int, str] = {}
@@ -1614,6 +1814,8 @@ def show_seasons(
                 continue
             air_date = str(ep.get('air_date') or '').strip() or None
             status = _classify_missing_air_date(air_date, now_dt=now_dt)
+            if status == 'missing' and (season_no, ep_no) in ignored_episode_keys:
+                continue
             if status == 'new':
                 missing_new_count += 1
             elif status == 'upcoming':
@@ -1708,6 +1910,23 @@ def show_season_episodes(
             ''',
             (show_id, season_number),
         ).fetchall()
+        ignored_episode_keys = _get_ignored_episode_keys(conn, show_id, season_number)
+        plex_episode_keys = {
+            (season_number, int(row['episode_number']))
+            for row in plex_rows
+            if row['episode_number'] is not None and int(row['episode_number']) > 0
+        }
+        stale_ignored = ignored_episode_keys & plex_episode_keys
+        if stale_ignored:
+            conn.executemany(
+                '''
+                DELETE FROM ignored_episodes
+                WHERE show_id = ? AND season_number = ? AND episode_number = ?
+                ''',
+                [(show_id, season_no, ep_no) for season_no, ep_no in stale_ignored],
+            )
+            conn.commit()
+            ignored_episode_keys -= stale_ignored
 
     plex_by_ep = {int(r['episode_number']): dict(r) for r in plex_rows}
     plex_by_tmdb = {
@@ -1737,8 +1956,11 @@ def show_season_episodes(
         status = 'in_plex'
         if not item['in_plex']:
             status = _classify_missing_air_date(str(item.get('air_date') or '').strip() or None, now_dt=now_dt)
+            if status == 'missing' and (season_number, int(episode.get('episode_number') or 0)) in ignored_episode_keys:
+                status = 'ignored'
         is_upcoming = status == 'upcoming'
         is_new = status == 'new'
+        is_ignored = status == 'ignored'
         include = True
         if missing_only and status not in {'missing', 'new'}:
             include = False
@@ -1749,6 +1971,7 @@ def show_season_episodes(
         if upcoming_only and not is_upcoming:
             include = False
         item['status'] = status
+        item['ignored'] = is_ignored
         if include:
             items.append(item)
 
@@ -1760,6 +1983,37 @@ def show_season_episodes(
         'in_plex_only': in_plex_only,
         'new_only': new_only,
         'upcoming_only': upcoming_only,
+    }
+
+
+@app.post('/api/shows/{show_id}/seasons/{season_number}/episodes/{episode_number}/ignore')
+def set_show_episode_ignore(
+    show_id: str,
+    season_number: int,
+    episode_number: int,
+    payload: IgnoreEpisodePayload,
+) -> dict[str, Any]:
+    if season_number <= 0 or episode_number <= 0:
+        raise HTTPException(status_code=400, detail='Invalid season or episode number')
+    with get_conn() as conn:
+        show = conn.execute(
+            '''
+            SELECT show_id
+            FROM plex_shows
+            WHERE show_id = ?
+            ''',
+            (show_id,),
+        ).fetchone()
+        if not show:
+            raise HTTPException(status_code=404, detail='Show not found')
+        _set_episode_ignored_state(conn, show_id, season_number, episode_number, payload.ignored)
+        conn.commit()
+    return {
+        'ok': True,
+        'show_id': show_id,
+        'season_number': season_number,
+        'episode_number': episode_number,
+        'ignored': bool(payload.ignored),
     }
 
 

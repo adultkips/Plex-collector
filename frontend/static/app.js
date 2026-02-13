@@ -278,6 +278,17 @@ function clearPrimaryDataCaches() {
   state.showsLastRefreshAt = 0;
 }
 
+function invalidateShowDetailCaches(showId) {
+  const showKey = `${showId}|`;
+  state.showSeasonsCache = Object.fromEntries(
+    Object.entries(state.showSeasonsCache).filter(([key]) => !key.startsWith(showKey)),
+  );
+  const episodePrefix = `${showId}|s:`;
+  state.showEpisodesCache = Object.fromEntries(
+    Object.entries(state.showEpisodesCache).filter(([key]) => !key.startsWith(episodePrefix)),
+  );
+}
+
 function applyImageFallback(img, fallbackSrc) {
   if (!img) return;
   img.addEventListener('error', () => {
@@ -2875,7 +2886,9 @@ async function renderShowEpisodes(showId, seasonNumber) {
       : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>';
     const isUpcoming = episode.status === 'upcoming';
     const isNew = episode.status === 'new';
+    const isIgnored = episode.status === 'ignored' || Boolean(episode.ignored);
     const isMissing = episode.status === 'missing' || episode.status === 'new';
+    const isToggleableIgnore = episode.status === 'missing' || isIgnored;
     const episodeDateText = episode.air_date ? formatDateDdMmYyyy(episode.air_date) : null;
     const episodeReleaseLabel = episodeDateText
       ? (isUpcoming ? `Releasing: ${episodeDateText}` : `Released: ${episodeDateText}`)
@@ -2885,16 +2898,24 @@ async function renderShowEpisodes(showId, seasonNumber) {
       : null;
     const card = document.createElement('article');
     card.className = `movie-card${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}`;
+    const renderEpisodeStatusBadges = (status) => {
+      const badgeNew = status === 'new';
+      const badgeUpcoming = status === 'upcoming';
+      const badgeMissing = status === 'missing' || status === 'new';
+      if (!(badgeNew || badgeUpcoming || badgeMissing)) return '';
+      return `
+        <div class="status-badges">
+          ${badgeNew ? '<span class="new-badge" title="New missing episode" aria-label="New missing episode">NEW</span>' : ''}
+          ${badgeUpcoming ? `<span class="upcoming-badge" title="Upcoming episode" aria-label="Upcoming episode">${calendarIconTag('upcoming-badge-icon')}</span>` : ''}
+          ${badgeMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
+        </div>
+      `;
+    };
     card.innerHTML = `
       <div class="poster-wrap">
+        ${isToggleableIgnore ? `<button class="ignore-toggle-btn ignore-toggle-overlay" type="button" data-episode-number="${episode.episode_number}" data-ignored="${isIgnored ? '1' : '0'}">${isIgnored ? 'Unignore' : 'Ignore'}</button>` : ''}
         <img class="poster" src="${withImageCacheKey(episode.poster_url) || SHOW_PLACEHOLDER}" alt="${episode.title}" loading="lazy" />
-        ${(isNew || isUpcoming || isMissing) ? `
-          <div class="status-badges">
-            ${isNew ? '<span class="new-badge" title="New missing episode" aria-label="New missing episode">NEW</span>' : ''}
-            ${isUpcoming ? `<span class="upcoming-badge" title="Upcoming episode" aria-label="Upcoming episode">${calendarIconTag('upcoming-badge-icon')}</span>` : ''}
-            ${isMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
-          </div>
-        ` : ''}
+        ${renderEpisodeStatusBadges(episode.status)}
         ${episode.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
         ${
           episode.in_plex
@@ -2909,6 +2930,66 @@ async function renderShowEpisodes(showId, seasonNumber) {
     `;
     const badge = card.querySelector('.badge-overlay');
     if (badge && badge.tagName === 'A') badge.addEventListener('click', (event) => event.stopPropagation());
+    const ignoreToggleBtn = card.querySelector('.ignore-toggle-btn');
+    if (ignoreToggleBtn) {
+      ignoreToggleBtn.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        if (ignoreToggleBtn.disabled) return;
+        ignoreToggleBtn.disabled = true;
+        try {
+          const nextIgnored = ignoreToggleBtn.dataset.ignored !== '1';
+          await api(`/api/shows/${showId}/seasons/${seasonNumber}/episodes/${episode.episode_number}/ignore`, {
+            method: 'POST',
+            body: JSON.stringify({ ignored: nextIgnored }),
+          });
+          // Live update card state without full page re-render.
+          const nextStatus = nextIgnored ? 'ignored' : 'missing';
+          episode.status = nextStatus;
+          episode.ignored = nextIgnored;
+          const statusWrap = card.querySelector('.status-badges');
+          const nextStatusHtml = renderEpisodeStatusBadges(nextStatus);
+          if (nextStatusHtml) {
+            if (statusWrap) {
+              statusWrap.outerHTML = nextStatusHtml;
+            } else {
+              const posterWrap = card.querySelector('.poster-wrap');
+              posterWrap.insertAdjacentHTML('beforeend', nextStatusHtml);
+            }
+          } else if (statusWrap) {
+            statusWrap.remove();
+          }
+          card.classList.remove('has-new', 'has-missing', 'has-upcoming');
+          if (nextStatus === 'new') card.classList.add('has-new');
+          else if (nextStatus === 'missing') card.classList.add('has-missing');
+          else if (nextStatus === 'upcoming') card.classList.add('has-upcoming');
+          ignoreToggleBtn.dataset.ignored = nextIgnored ? '1' : '0';
+          ignoreToggleBtn.textContent = nextIgnored ? 'Unignore' : 'Ignore';
+          const refresh = await api('/api/shows/missing-scan', {
+            method: 'POST',
+            body: JSON.stringify({ show_ids: [String(showId)] }),
+          });
+          const updated = Array.isArray(refresh.items) ? refresh.items[0] : null;
+          if (updated) applyShowMissingScanUpdate(updated);
+          invalidateShowDetailCaches(showId);
+          const shouldHideInCurrentFilter = (
+            (missingOnly && !(nextStatus === 'missing' || nextStatus === 'new'))
+            || (inPlexOnly && !episode.in_plex)
+            || (newOnly && nextStatus !== 'new')
+            || (upcomingOnly && nextStatus !== 'upcoming')
+          );
+          if (shouldHideInCurrentFilter) {
+            card.remove();
+            if (!grid.querySelector('.movie-card')) {
+              grid.innerHTML = '<div class="empty">No episodes found.</div>';
+            }
+          }
+          ignoreToggleBtn.disabled = false;
+        } catch (error) {
+          window.alert(error.message);
+          ignoreToggleBtn.disabled = false;
+        }
+      });
+    }
     if (tmdbEpisodeUrl) {
       card.addEventListener('click', () => window.open(tmdbEpisodeUrl, '_blank', 'noopener,noreferrer'));
     }
@@ -3182,7 +3263,9 @@ async function renderActorDetail(actorId) {
       const card = document.createElement('article');
       const isNew = movie.status === 'new';
       const isUpcoming = movie.status === 'upcoming';
+      const isIgnored = movie.status === 'ignored' || Boolean(movie.ignored);
       const isMissing = movie.status === 'missing' || movie.status === 'new';
+      const isToggleableIgnore = movie.status === 'missing' || isIgnored;
       card.className = `movie-card${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}`;
       const tmdbUrl = movie.tmdb_id ? `https://www.themoviedb.org/movie/${movie.tmdb_id}` : null;
       const downloadUrl = buildDownloadLink('movie', movie.title);
@@ -3190,16 +3273,24 @@ async function renderActorDetail(actorId) {
         ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
         : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
       const releaseLabel = movie.release_date ? formatDateDdMmYyyy(movie.release_date) : 'No date';
+      const renderMovieStatusBadges = (status) => {
+        const badgeNew = status === 'new';
+        const badgeUpcoming = status === 'upcoming';
+        const badgeMissing = status === 'missing' || status === 'new';
+        if (!(badgeNew || badgeUpcoming || badgeMissing)) return '';
+        return `
+          <div class="status-badges">
+            ${badgeNew ? '<span class="new-badge" title="New missing movie" aria-label="New missing movie">NEW</span>' : ''}
+            ${badgeUpcoming ? `<span class="upcoming-badge" title="Upcoming movie" aria-label="Upcoming movie">${calendarIconTag('upcoming-badge-icon')}</span>` : ''}
+            ${badgeMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
+          </div>
+        `;
+      };
       card.innerHTML = `
         <div class="poster-wrap">
+          ${isToggleableIgnore && movie.tmdb_id ? `<button class="ignore-toggle-btn ignore-toggle-overlay" type="button" data-tmdb-id="${movie.tmdb_id}" data-ignored="${isIgnored ? '1' : '0'}">${isIgnored ? 'Unignore' : 'Ignore'}</button>` : ''}
           <img class="poster" src="${withImageCacheKey(movie.poster_url) || MOVIE_PLACEHOLDER}" alt="${movie.title}" loading="lazy" />
-          ${(isNew || isUpcoming || isMissing) ? `
-            <div class="status-badges">
-              ${isNew ? '<span class="new-badge" title="New missing movie" aria-label="New missing movie">NEW</span>' : ''}
-              ${isUpcoming ? `<span class="upcoming-badge" title="Upcoming movie" aria-label="Upcoming movie">${calendarIconTag('upcoming-badge-icon')}</span>` : ''}
-              ${isMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
-            </div>
-          ` : ''}
+          ${renderMovieStatusBadges(movie.status)}
           ${movie.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
           ${
             movie.in_plex
@@ -3218,6 +3309,67 @@ async function renderActorDetail(actorId) {
       const badge = card.querySelector('.badge-overlay');
       if (badge) {
         badge.addEventListener('click', (event) => event.stopPropagation());
+      }
+      const ignoreToggleBtn = card.querySelector('.ignore-toggle-btn');
+      if (ignoreToggleBtn) {
+        ignoreToggleBtn.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          if (ignoreToggleBtn.disabled) return;
+          ignoreToggleBtn.disabled = true;
+          try {
+            const nextIgnored = ignoreToggleBtn.dataset.ignored !== '1';
+            const tmdbMovieId = Number(movie.tmdb_id || 0);
+            if (!Number.isFinite(tmdbMovieId) || tmdbMovieId <= 0) {
+              throw new Error('TMDb id missing for this movie');
+            }
+            await api(`/api/actors/${actorId}/movies/${tmdbMovieId}/ignore`, {
+              method: 'POST',
+              body: JSON.stringify({ ignored: nextIgnored }),
+            });
+            const nextStatus = nextIgnored ? 'ignored' : 'missing';
+            movie.status = nextStatus;
+            movie.ignored = nextIgnored;
+            const statusWrap = card.querySelector('.status-badges');
+            const nextStatusHtml = renderMovieStatusBadges(nextStatus);
+            if (nextStatusHtml) {
+              if (statusWrap) statusWrap.outerHTML = nextStatusHtml;
+              else card.querySelector('.poster-wrap').insertAdjacentHTML('beforeend', nextStatusHtml);
+            } else if (statusWrap) {
+              statusWrap.remove();
+            }
+            card.classList.remove('has-new', 'has-missing', 'has-upcoming');
+            if (nextStatus === 'new') card.classList.add('has-new');
+            else if (nextStatus === 'missing') card.classList.add('has-missing');
+            else if (nextStatus === 'upcoming') card.classList.add('has-upcoming');
+            ignoreToggleBtn.dataset.ignored = nextIgnored ? '1' : '0';
+            ignoreToggleBtn.textContent = nextIgnored ? 'Unignore' : 'Ignore';
+            const refresh = await api('/api/actors/missing-scan', {
+              method: 'POST',
+              body: JSON.stringify({ actor_ids: [actorId] }),
+            });
+            const updated = Array.isArray(refresh.items) ? refresh.items[0] : null;
+            if (updated) {
+              applyActorMissingScanUpdate(updated);
+              clearPersistentCache(CACHE_KEYS.actors);
+            }
+            const shouldHideInCurrentFilter = (
+              (missingOnly && !(nextStatus === 'missing' || nextStatus === 'new'))
+              || (inPlexOnly && !movie.in_plex)
+              || (newOnly && nextStatus !== 'new')
+              || (upcomingOnly && nextStatus !== 'upcoming')
+            );
+            if (shouldHideInCurrentFilter) {
+              card.remove();
+              if (!grid.querySelector('.movie-card')) {
+                grid.innerHTML = '<div class="empty">No movies found.</div>';
+              }
+            }
+            ignoreToggleBtn.disabled = false;
+          } catch (error) {
+            window.alert(error.message);
+            ignoreToggleBtn.disabled = false;
+          }
+        });
       }
       applyImageFallback(card.querySelector('.poster'), MOVIE_PLACEHOLDER);
       grid.appendChild(card);

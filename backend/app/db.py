@@ -91,6 +91,29 @@ def init_db() -> None:
             )
             '''
         )
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS ignored_episodes (
+                show_id TEXT NOT NULL,
+                season_number INTEGER NOT NULL,
+                episode_number INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (show_id, season_number, episode_number)
+            )
+            '''
+        )
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS ignored_movies (
+                actor_id TEXT NOT NULL,
+                tmdb_movie_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (actor_id, tmdb_movie_id)
+            )
+            '''
+        )
         columns = {row[1] for row in conn.execute("PRAGMA table_info('plex_movies')").fetchall()}
         actor_columns = {row[1] for row in conn.execute("PRAGMA table_info('actors')").fetchall()}
         if 'movies_in_plex_count' not in actor_columns:
@@ -147,6 +170,33 @@ def init_db() -> None:
             conn.execute('ALTER TABLE plex_show_episodes ADD COLUMN season_plex_web_url TEXT')
         if 'plex_web_url' not in episode_columns:
             conn.execute('ALTER TABLE plex_show_episodes ADD COLUMN plex_web_url TEXT')
+        ignored_columns = {row[1] for row in conn.execute("PRAGMA table_info('ignored_episodes')").fetchall()}
+        if not ignored_columns:
+            conn.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS ignored_episodes (
+                    show_id TEXT NOT NULL,
+                    season_number INTEGER NOT NULL,
+                    episode_number INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (show_id, season_number, episode_number)
+                )
+                '''
+            )
+        ignored_movie_columns = {row[1] for row in conn.execute("PRAGMA table_info('ignored_movies')").fetchall()}
+        if not ignored_movie_columns:
+            conn.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS ignored_movies (
+                    actor_id TEXT NOT NULL,
+                    tmdb_movie_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (actor_id, tmdb_movie_id)
+                )
+                '''
+            )
         conn.commit()
 
 
