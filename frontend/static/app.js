@@ -441,6 +441,11 @@ function getActorInitialBucket(name) {
   if (/[0-9]/.test(firstChar)) return '0-9';
   if (/[A-Z]/.test(firstChar)) return firstChar;
   if (['Æ', 'Ø', 'Å'].includes(firstChar)) return firstChar;
+  const normalizedFirstChar = firstChar
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .charAt(0);
+  if (/[A-Z]/.test(normalizedFirstChar)) return normalizedFirstChar;
   return '#';
 }
 
