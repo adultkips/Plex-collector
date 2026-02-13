@@ -344,6 +344,11 @@ def _build_actor_movies_payload(
         ).fetchall()
 
     plex_by_key = {(r['normalized_title'], r['year']): dict(r) for r in plex_rows}
+    plex_by_original_key = {
+        (r['normalized_original_title'], r['year']): dict(r)
+        for r in plex_rows
+        if r['normalized_original_title']
+    }
     plex_by_tmdb_id = {r['tmdb_id']: dict(r) for r in plex_rows if r['tmdb_id'] is not None}
     plex_title_buckets: dict[str, list[dict[str, Any]]] = {}
     plex_original_title_buckets: dict[str, list[dict[str, Any]]] = {}
@@ -360,9 +365,19 @@ def _build_actor_movies_payload(
     results = []
     for movie in credits:
         normalized = normalize_title(movie['title'])
+        normalized_original = normalize_title(movie.get('original_title')) if movie.get('original_title') else None
         matched = plex_by_tmdb_id.get(movie['tmdb_id']) if movie.get('tmdb_id') is not None else None
+
+        # Primary title+year match first.
         if not matched:
             matched = plex_by_key.get((normalized, movie['year']))
+
+        # Fallback: if title+year failed, try original_title+year.
+        if not matched and normalized_original and normalized_original != normalized:
+            matched = plex_by_key.get((normalized_original, movie['year']))
+            if not matched:
+                matched = plex_by_original_key.get((normalized_original, movie['year']))
+
         if not matched:
             candidates = plex_title_buckets.get(normalized, [])
             if candidates and movie['year'] is not None:
@@ -373,7 +388,7 @@ def _build_actor_movies_payload(
                 matched = candidates[0]
 
         if not matched:
-            original_candidates = plex_original_title_buckets.get(normalized, [])
+            original_candidates = plex_original_title_buckets.get(normalized_original or normalized, [])
             if original_candidates and movie['year'] is not None:
                 close_original = [
                     c for c in original_candidates if c['year'] and abs(c['year'] - movie['year']) <= 1
