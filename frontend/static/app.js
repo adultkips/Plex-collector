@@ -3218,9 +3218,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
     const isMissing = episode.status === 'missing' || episode.status === 'new';
     const isToggleableIgnore = episode.status === 'missing' || isIgnored;
     const episodeDateText = episode.air_date ? formatDateDdMmYyyy(episode.air_date) : null;
-    const episodeReleaseLabel = episodeDateText
-      ? (isUpcoming ? `Releasing: ${episodeDateText}` : `Released: ${episodeDateText}`)
-      : '';
+    const episodeReleaseLabel = episodeDateText || '';
     const tmdbEpisodeUrl = data.show?.tmdb_show_id
       ? `https://www.themoviedb.org/tv/${data.show.tmdb_show_id}/season/${seasonNumber}/episode/${episode.episode_number}`
       : null;

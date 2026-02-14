@@ -1196,12 +1196,12 @@ body.is-scrolled .topbar {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 17px;
+  min-height: 23px;
   border-radius: 7px;
   padding: 2px 5px;
   background: rgba(148, 163, 184, 0.15);
   color: #ffffff;
-  font-size: 0.68rem;
+  font-size: 0.78rem;
   line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
