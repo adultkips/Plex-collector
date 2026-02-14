@@ -6,6 +6,7 @@ import requests
 
 from .config import TMDB_API_KEY, TMDB_IMAGE_BASE
 from .db import get_setting
+from .utils import normalize_title
 
 TMDB_BASE = 'https://api.themoviedb.org/3'
 
@@ -90,11 +91,20 @@ def search_tv_show(name: str, year: int | None = None) -> dict[str, Any] | None:
     if not results:
         return None
 
-    def rank(show: dict[str, Any]) -> tuple[int, float]:
+    query_norm = normalize_title(name)
+
+    def rank(show: dict[str, Any]) -> tuple[int, int, int, int, float]:
         first_air = show.get('first_air_date') or ''
         show_year = int(first_air[:4]) if len(first_air) >= 4 and first_air[:4].isdigit() else None
+        show_name_norm = normalize_title(str(show.get('name') or ''))
+        show_original_name_norm = normalize_title(str(show.get('original_name') or ''))
+        candidate_norms = [show_name_norm, show_original_name_norm]
+
+        exact_match = 1 if query_norm and query_norm in candidate_norms else 0
+        prefix_match = 1 if query_norm and any(c.startswith(query_norm) for c in candidate_norms if c) else 0
+        contains_match = 1 if query_norm and any(query_norm in c for c in candidate_norms if c) else 0
         year_match = 1 if (year is not None and show_year == year) else 0
-        return (year_match, float(show.get('popularity', 0)))
+        return (exact_match, prefix_match, contains_match, year_match, float(show.get('popularity', 0)))
 
     tv_show = sorted(results, key=rank, reverse=True)[0]
     poster_path = tv_show.get('poster_path')

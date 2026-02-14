@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, UTC
 from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
@@ -19,6 +20,46 @@ from .config import (
 from .utils import actor_id_from_name, normalize_title
 
 PLEX_BASE = 'https://plex.tv'
+
+
+def _extract_external_ids(node: ET.Element) -> tuple[int | None, str | None]:
+    tmdb_id: int | None = None
+    imdb_id: str | None = None
+
+    def consume_guid(raw: str | None) -> None:
+        nonlocal tmdb_id, imdb_id
+        if not raw:
+            return
+        guid = str(raw).strip().lower()
+        if not guid:
+            return
+
+        if guid.startswith('tmdb://'):
+            value = guid.removeprefix('tmdb://').strip()
+            if value.isdigit():
+                tmdb_id = int(value)
+            return
+        if 'tmdb://' in guid:
+            value = guid.split('tmdb://', 1)[1].split('?', 1)[0].strip()
+            if value.isdigit():
+                tmdb_id = int(value)
+            return
+
+        if guid.startswith('imdb://'):
+            imdb_value = guid.removeprefix('imdb://').strip()
+            if imdb_value:
+                imdb_id = imdb_value
+            return
+        if 'imdb://' in guid:
+            imdb_value = guid.split('imdb://', 1)[1].split('?', 1)[0].strip()
+            if imdb_value:
+                imdb_id = imdb_value
+            return
+
+    consume_guid(node.attrib.get('guid'))
+    for guid_node in node.findall('Guid'):
+        consume_guid(guid_node.attrib.get('id'))
+    return tmdb_id, imdb_id
 
 
 def proxied_thumb_url(thumb_path: str | None) -> str | None:
@@ -337,6 +378,7 @@ def fetch_movie_library_snapshot(
                 continue
             seen_movie_rating_keys.add(rating_key)
             movie_rating_keys.append(rating_key)
+            tmdb_id, imdb_id = _extract_external_ids(video)
 
             movies.append(
                 {
@@ -345,8 +387,8 @@ def fetch_movie_library_snapshot(
                     'title': title,
                     'original_title': original_title,
                     'year': year,
-                    'tmdb_id': None,
-                    'imdb_id': None,
+                    'tmdb_id': tmdb_id,
+                    'imdb_id': imdb_id,
                     'normalized_title': normalize_title(title),
                     'normalized_original_title': normalize_title(original_title) if original_title else None,
                     'plex_web_url': (
@@ -371,6 +413,7 @@ def fetch_movie_library_snapshot(
     # Count actor appearances from full movie metadata (not section listing),
     # because section listing can return truncated cast information.
     if movie_rating_keys:
+        movie_by_rating_key = {str(movie['plex_rating_key']): movie for movie in movies}
         chunk_size = 40
         for idx in range(0, len(movie_rating_keys), chunk_size):
             batch = movie_rating_keys[idx : idx + chunk_size]
@@ -380,6 +423,15 @@ def fetch_movie_library_snapshot(
                 f"/library/metadata/{','.join(batch)}",
             )
             for video in batch_root.findall('Video'):
+                rating_key = str(video.attrib.get('ratingKey') or '')
+                if rating_key and rating_key in movie_by_rating_key:
+                    tmdb_id, imdb_id = _extract_external_ids(video)
+                    movie_ref = movie_by_rating_key[rating_key]
+                    if tmdb_id is not None:
+                        movie_ref['tmdb_id'] = tmdb_id
+                    if imdb_id:
+                        movie_ref['imdb_id'] = imdb_id
+
                 seen_in_movie: set[str] = set()
                 for role in video.findall('Role'):
                     actor_name = role.attrib.get('tag')
@@ -504,6 +556,40 @@ def resolve_movie_section_ids(
     return resolved
 
 
+def resolve_show_tmdb_ids(
+    server_uri: str,
+    server_token: str,
+    show_rating_keys: list[str],
+) -> dict[str, int]:
+    unique_rating_keys = [rk for rk in dict.fromkeys(show_rating_keys) if rk]
+    if not unique_rating_keys:
+        return {}
+    resolved: dict[str, int] = {}
+    chunk_size = 40
+    for idx in range(0, len(unique_rating_keys), chunk_size):
+        batch = unique_rating_keys[idx : idx + chunk_size]
+        batch_root = _server_get(
+            server_uri,
+            server_token,
+            f"/library/metadata/{','.join(batch)}",
+        )
+        for directory in batch_root.findall('Directory'):
+            rating_key = directory.attrib.get('ratingKey')
+            if not rating_key:
+                continue
+            tmdb_id, _ = _extract_external_ids(directory)
+            if tmdb_id is not None:
+                resolved[str(rating_key)] = int(tmdb_id)
+        for video in batch_root.findall('Video'):
+            rating_key = video.attrib.get('ratingKey')
+            if not rating_key:
+                continue
+            tmdb_id, _ = _extract_external_ids(video)
+            if tmdb_id is not None:
+                resolved[str(rating_key)] = int(tmdb_id)
+    return resolved
+
+
 
 
 def fetch_show_library_snapshot(
@@ -524,12 +610,26 @@ def fetch_show_library_snapshot(
         if not section_key:
             continue
 
-        shows_root = _server_get(
-            server_uri,
-            server_token,
-            f'/library/sections/{section_key}/all',
-            params={'type': 2},
-        )
+        # Fetch show and episode listings concurrently per section to reduce
+        # total scan latency without changing scan output.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            shows_future = pool.submit(
+                _server_get,
+                server_uri,
+                server_token,
+                f'/library/sections/{section_key}/all',
+                {'type': 2},
+            )
+            episodes_future = pool.submit(
+                _server_get,
+                server_uri,
+                server_token,
+                f'/library/sections/{section_key}/all',
+                {'type': 4},
+            )
+            shows_root = shows_future.result()
+            episodes_root = episodes_future.result()
+
         for directory in shows_root.findall('Directory'):
             title = directory.attrib.get('title')
             rating_key = directory.attrib.get('ratingKey')
@@ -538,12 +638,13 @@ def fetch_show_library_snapshot(
 
             year_raw = directory.attrib.get('year')
             year = int(year_raw) if year_raw and year_raw.isdigit() else None
+            show_tmdb_id, _ = _extract_external_ids(directory)
             shows_by_rating_key[rating_key] = {
                 'show_id': rating_key,
                 'plex_rating_key': rating_key,
                 'title': title,
                 'year': year,
-                'tmdb_show_id': None,
+                'tmdb_show_id': show_tmdb_id,
                 'normalized_title': normalize_title(title),
                 'image_url': proxied_thumb_url(directory.attrib.get('thumb')),
                 'plex_web_url': (
@@ -553,12 +654,6 @@ def fetch_show_library_snapshot(
                 ),
             }
 
-        episodes_root = _server_get(
-            server_uri,
-            server_token,
-            f'/library/sections/{section_key}/all',
-            params={'type': 4},
-        )
         for video in episodes_root.findall('Video'):
             episode_rating_key = video.attrib.get('ratingKey')
             show_rating_key = video.attrib.get('grandparentRatingKey')
@@ -571,6 +666,7 @@ def fetch_show_library_snapshot(
                 continue
 
             title = video.attrib.get('title') or f'Episode {episode_raw}'
+            episode_tmdb_id, _ = _extract_external_ids(video)
             episodes.append(
                 {
                     'plex_rating_key': episode_rating_key,
@@ -579,7 +675,7 @@ def fetch_show_library_snapshot(
                     'episode_number': int(episode_raw),
                     'title': title,
                     'normalized_title': normalize_title(title),
-                    'tmdb_episode_id': None,
+                    'tmdb_episode_id': episode_tmdb_id,
                     'season_plex_web_url': (
                         f'https://app.plex.tv/desktop#!/server/{server_client_identifier}/details?key=%2Flibrary%2Fmetadata%2F{video.attrib.get("parentRatingKey")}'
                         if server_client_identifier and video.attrib.get('parentRatingKey')

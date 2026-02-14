@@ -10,7 +10,7 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
 - First-run onboarding flow with `Login with Plex`, Plex server selection, and TMDb API key setup.
 - Localhost-only architecture: all scans, matching, and state are handled locally on your machine.
 - Profile hub with centralized settings (`Server`, `TMDb key`, `Download Prefix`).
-- Floating icon-only bottom navigation `Profile`, `Actors`, and `Shows`.
+- Floating icon-only bottom navigation `Profile`, `Actors`, `Shows`, and `Calendar`.
 - Download Prefix system:
   - Configurable start/format/end templates for `Actors`, `Movies`, `Shows`, `Seasons`, and `Episodes`.
   - Multiple keyword formats supported (`%20`, `-`, `+`) with live examples.
@@ -51,18 +51,29 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
   - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW` with ASC/DESC direction.
   - Visual status badges and borders for `In Plex`, `Missing`, `Upcoming` and `NEW`.
   - Direct season or episode download badge support via configurable prefix links.
+- Calendar experience:
+  - Dedicated calendar page with month navigation and month/year picker.
+  - Date-range event view for upcoming movie and show releases.
+  - Event hover card with poster, full title, and release date.
+  - Type filter pills for `Movie` and `Show`.
 
 ## Screenshots
 <table>
   <tr>
     <td align="center"><img src="screenshots/profile-v2.png" alt="Profile" width="300"><br><sub>Profile</sub></td>
-    <td align="center"><img src="screenshots/actors-v2.png" alt="Actors" width="300"><br><sub>Actors</sub></td>
-    <td align="center"><img src="screenshots/movies-v2.png" alt="Movies" width="300"><br><sub>Movies</sub></td>
+    <td align="center"><img src="screenshots/seasons-v2.png" alt="Seasons" width="300"><br><sub>Seasons</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="screenshots/shows-v2.png" alt="Shows" width="300"><br><sub>Shows</sub></td>
-    <td align="center"><img src="screenshots/seasons-v2.png" alt="Seasons" width="300"><br><sub>Seasons</sub></td>
+    <td align="center"><img src="screenshots/actors-v2.png" alt="Actors" width="300"><br><sub>Actors</sub></td>
     <td align="center"><img src="screenshots/episodes-v2.png" alt="Episodes" width="300"><br><sub>Episodes</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/movies-v2.png" alt="Movies" width="300"><br><sub>Movies</sub></td>
+    <td align="center"><img src="screenshots/shows-v2.png" alt="Shows" width="300"><br><sub>Shows</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/calendar.png" alt="Calendar" width="300"><br><sub>Calendar</sub></td>
+    <td></td>
   </tr>
 </table>
 

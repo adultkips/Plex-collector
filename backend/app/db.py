@@ -114,6 +114,36 @@ def init_db() -> None:
             )
             '''
         )
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS actor_missing_movies (
+                actor_id TEXT NOT NULL,
+                tmdb_movie_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                release_date TEXT NOT NULL,
+                poster_url TEXT,
+                status TEXT NOT NULL,
+                ignored INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (actor_id, tmdb_movie_id)
+            )
+            '''
+        )
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS show_missing_episodes (
+                show_id TEXT NOT NULL,
+                season_number INTEGER NOT NULL,
+                episode_number INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                air_date TEXT NOT NULL,
+                status TEXT NOT NULL,
+                ignored INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (show_id, season_number, episode_number)
+            )
+            '''
+        )
         columns = {row[1] for row in conn.execute("PRAGMA table_info('plex_movies')").fetchall()}
         actor_columns = {row[1] for row in conn.execute("PRAGMA table_info('actors')").fetchall()}
         if 'movies_in_plex_count' not in actor_columns:
@@ -194,6 +224,42 @@ def init_db() -> None:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (actor_id, tmdb_movie_id)
+                )
+                '''
+            )
+        actor_missing_movie_columns = {row[1] for row in conn.execute("PRAGMA table_info('actor_missing_movies')").fetchall()}
+        if not actor_missing_movie_columns:
+            conn.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS actor_missing_movies (
+                    actor_id TEXT NOT NULL,
+                    tmdb_movie_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    release_date TEXT NOT NULL,
+                    poster_url TEXT,
+                    status TEXT NOT NULL,
+                    ignored INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (actor_id, tmdb_movie_id)
+                )
+                '''
+            )
+        if 'poster_url' not in actor_missing_movie_columns:
+            conn.execute('ALTER TABLE actor_missing_movies ADD COLUMN poster_url TEXT')
+        show_missing_episode_columns = {row[1] for row in conn.execute("PRAGMA table_info('show_missing_episodes')").fetchall()}
+        if not show_missing_episode_columns:
+            conn.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS show_missing_episodes (
+                    show_id TEXT NOT NULL,
+                    season_number INTEGER NOT NULL,
+                    episode_number INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    air_date TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    ignored INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (show_id, season_number, episode_number)
                 )
                 '''
             )

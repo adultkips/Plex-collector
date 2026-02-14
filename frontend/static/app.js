@@ -3,6 +3,7 @@ const nav = document.getElementById('floating-nav');
 const navProfile = document.getElementById('nav-profile');
 const navActors = document.getElementById('nav-actors');
 const navShows = document.getElementById('nav-shows');
+const navCalendar = document.getElementById('nav-calendar');
 const ACTOR_PLACEHOLDER = 'https://placehold.co/500x750?text=Actor';
 const MOVIE_PLACEHOLDER = 'https://placehold.co/500x750?text=Movie';
 const SHOW_PLACEHOLDER = 'https://placehold.co/500x750?text=Show';
@@ -104,6 +105,10 @@ const state = {
   profileLastRefreshAt: 0,
   actorsLastRefreshAt: 0,
   showsLastRefreshAt: 0,
+  calendarCursor: null,
+  calendarRenderToken: 0,
+  calendarShowMovies: localStorage.getItem('calendarShowMovies') !== '0',
+  calendarShowShows: localStorage.getItem('calendarShowShows') !== '0',
 };
 
 const LOCAL_STORAGE_RESET_KEYS = [
@@ -128,6 +133,7 @@ let plexAuthPopup = null;
 navProfile.addEventListener('click', () => routeTo('profile'));
 navActors.addEventListener('click', () => routeTo('actors'));
 navShows.addEventListener('click', () => routeTo('shows'));
+navCalendar.addEventListener('click', () => routeTo('calendar'));
 
 window.addEventListener('popstate', handleLocation);
 
@@ -318,6 +324,15 @@ function withImageCacheKey(url) {
   } catch {
     return url;
   }
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function plexLogoTag(className = 'badge-logo') {
@@ -609,6 +624,7 @@ function setActiveNav(view) {
   navProfile.classList.toggle('active', view === 'profile');
   navActors.classList.toggle('active', view === 'actors');
   navShows.classList.toggle('active', view === 'shows');
+  navCalendar.classList.toggle('active', view === 'calendar');
 }
 
 function setFullWidthGridMode(enabled) {
@@ -624,6 +640,7 @@ async function handleLocation() {
   cancelShowPrefetches();
   resetShowImageQueue();
   const path = window.location.pathname;
+  document.body.classList.remove('calendar-view');
 
   if (!state.session) {
     await bootstrap();
@@ -687,10 +704,316 @@ async function handleLocation() {
     return;
   }
 
+  if (path === '/calendar') {
+    document.body.classList.add('calendar-view');
+    setFullWidthGridMode(false);
+    setNavVisible(true);
+    renderCalendar();
+    setActiveNav('calendar');
+    return;
+  }
+
   setFullWidthGridMode(false);
   setNavVisible(true);
   await renderProfile();
   setActiveNav('profile');
+}
+
+function renderCalendar() {
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  if (!state.calendarCursor) {
+    state.calendarCursor = { year: todayStart.getFullYear(), month: todayStart.getMonth() };
+  }
+  const year = Number(state.calendarCursor.year);
+  const month = Number(state.calendarCursor.month);
+  const movieOnly = state.calendarShowMovies && !state.calendarShowShows;
+  const showOnly = !state.calendarShowMovies && state.calendarShowShows;
+  const firstOfMonth = new Date(year, month, 1);
+  const monthLabel = firstOfMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  const mondayStartOffset = (firstOfMonth.getDay() + 6) % 7;
+  const gridStart = new Date(year, month, 1 - mondayStartOffset);
+  const gridEnd = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + 41);
+  const formatDateKey = (date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+  const rangeStart = formatDateKey(gridStart);
+  const rangeEnd = formatDateKey(gridEnd);
+  const dayCells = Array.from({ length: 42 }).map((_, index) => {
+    const cellDate = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
+    const dateKey = formatDateKey(cellDate);
+    const isOutsideMonth = cellDate.getMonth() !== month;
+    const isToday = cellDate.getTime() === todayStart.getTime();
+    const isPast = cellDate.getTime() < todayStart.getTime();
+    const className = [
+      'calendar-day-cell',
+      isOutsideMonth ? 'is-outside-month' : '',
+      isToday ? 'is-today' : '',
+      !isToday && isPast ? 'is-past' : '',
+    ].filter(Boolean).join(' ');
+    return `
+      <div class="${className}" data-date="${dateKey}">
+        <span class="calendar-day-number">${cellDate.getDate()}</span>
+        <div class="calendar-day-events"></div>
+      </div>
+    `;
+  }).join('');
+  app.innerHTML = `
+    <section class="card calendar-layout-card">
+      <div class="calendar-layout-header">
+        <button id="calendar-prev-btn" class="toggle-btn" type="button" aria-label="Previous month">‹</button>
+        <div class="calendar-layout-center">
+          <button id="calendar-open-picker" class="calendar-month-year-btn" type="button" aria-label="Choose month and year">${monthLabel}</button>
+          <button id="calendar-today-btn" class="secondary-btn" type="button">Today</button>
+        </div>
+        <button id="calendar-next-btn" class="toggle-btn" type="button" aria-label="Next month">›</button>
+      </div>
+      <div class="calendar-weekdays">
+        <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+      </div>
+      <div class="calendar-grid-preview">
+        ${dayCells}
+      </div>
+      <div class="calendar-type-legend">
+        <button id="calendar-toggle-movie" class="calendar-type-legend-item ${movieOnly ? 'active' : ''}" type="button" aria-pressed="${movieOnly ? 'true' : 'false'}">
+          <i class="calendar-event-dot movie" aria-hidden="true"></i>Movie
+        </button>
+        <button id="calendar-toggle-show" class="calendar-type-legend-item ${showOnly ? 'active' : ''}" type="button" aria-pressed="${showOnly ? 'true' : 'false'}">
+          <i class="calendar-event-dot show" aria-hidden="true"></i>Show
+        </button>
+      </div>
+    </section>
+  `;
+
+  document.getElementById('calendar-toggle-movie')?.addEventListener('click', () => {
+    const wasMovieOnly = state.calendarShowMovies && !state.calendarShowShows;
+    if (wasMovieOnly) {
+      state.calendarShowMovies = true;
+      state.calendarShowShows = true;
+    } else {
+      state.calendarShowMovies = true;
+      state.calendarShowShows = false;
+    }
+    localStorage.setItem('calendarShowMovies', state.calendarShowMovies ? '1' : '0');
+    localStorage.setItem('calendarShowShows', state.calendarShowShows ? '1' : '0');
+    renderCalendar();
+  });
+  document.getElementById('calendar-toggle-show')?.addEventListener('click', () => {
+    const wasShowOnly = !state.calendarShowMovies && state.calendarShowShows;
+    if (wasShowOnly) {
+      state.calendarShowMovies = true;
+      state.calendarShowShows = true;
+    } else {
+      state.calendarShowMovies = false;
+      state.calendarShowShows = true;
+    }
+    localStorage.setItem('calendarShowMovies', state.calendarShowMovies ? '1' : '0');
+    localStorage.setItem('calendarShowShows', state.calendarShowShows ? '1' : '0');
+    renderCalendar();
+  });
+
+  document.getElementById('calendar-prev-btn')?.addEventListener('click', () => {
+    const next = new Date(year, month - 1, 1);
+    state.calendarCursor = { year: next.getFullYear(), month: next.getMonth() };
+    renderCalendar();
+  });
+  document.getElementById('calendar-next-btn')?.addEventListener('click', () => {
+    const next = new Date(year, month + 1, 1);
+    state.calendarCursor = { year: next.getFullYear(), month: next.getMonth() };
+    renderCalendar();
+  });
+  document.getElementById('calendar-today-btn')?.addEventListener('click', () => {
+    state.calendarCursor = { year: todayStart.getFullYear(), month: todayStart.getMonth() };
+    renderCalendar();
+  });
+  document.getElementById('calendar-open-picker')?.addEventListener('click', () => {
+    openCalendarMonthYearPicker(year, month, (pickedYear, pickedMonth) => {
+      state.calendarCursor = { year: pickedYear, month: pickedMonth };
+      renderCalendar();
+    });
+  });
+
+  const renderToken = ++state.calendarRenderToken;
+  const calendarGridEl = app.querySelector('.calendar-grid-preview');
+  if (calendarGridEl) calendarGridEl.classList.add('is-loading');
+  api(`/api/calendar/events?start=${rangeStart}&end=${rangeEnd}`)
+    .then((payload) => {
+      if (renderToken !== state.calendarRenderToken) return;
+      const items = (Array.isArray(payload?.items) ? payload.items : []).filter((item) => {
+        const type = item?.type === 'show' ? 'show' : 'movie';
+        if (type === 'movie') return state.calendarShowMovies;
+        return state.calendarShowShows;
+      });
+      const byDate = new Map();
+      for (const item of items) {
+        const dateKey = String(item?.date || '').trim();
+        if (!dateKey) continue;
+        if (!byDate.has(dateKey)) byDate.set(dateKey, []);
+        byDate.get(dateKey).push(item);
+      }
+      app.querySelectorAll('.calendar-day-cell').forEach((cell) => {
+        const dateKey = cell.getAttribute('data-date');
+        const container = cell.querySelector('.calendar-day-events');
+        if (!container || !dateKey) return;
+        const events = byDate.get(dateKey) || [];
+        container.innerHTML = events.map((event) => {
+          const type = event?.type === 'show' ? 'show' : 'movie';
+          const title = String(event?.title || '').trim();
+          const posterUrl = withImageCacheKey(String(event?.poster_url || '').trim());
+          const dateText = formatDateDdMmYyyy(String(event?.date || ''));
+          return `
+            <div
+              class="calendar-event-line"
+              data-title="${escapeHtml(title)}"
+              data-date="${escapeHtml(dateText)}"
+              data-poster="${escapeHtml(posterUrl || '')}"
+            >
+              <span class="calendar-event-dot ${type}" aria-hidden="true"></span>
+              <span class="calendar-event-text">${escapeHtml(title)}</span>
+            </div>
+          `;
+        }).join('');
+      });
+      const existingHoverCard = document.getElementById('calendar-event-hover-card');
+      if (existingHoverCard) existingHoverCard.remove();
+      const hoverCard = document.createElement('div');
+      hoverCard.id = 'calendar-event-hover-card';
+      hoverCard.className = 'calendar-event-hover-card hidden';
+      document.body.appendChild(hoverCard);
+      const placeHoverCard = (clientX, clientY) => {
+        const gap = 12;
+        const rect = hoverCard.getBoundingClientRect();
+        let left = clientX + gap;
+        let top = clientY + gap;
+        if (left + rect.width > window.innerWidth - 8) left = clientX - rect.width - gap;
+        if (top + rect.height > window.innerHeight - 8) top = clientY - rect.height - gap;
+        left = Math.max(8, left);
+        top = Math.max(8, top);
+        hoverCard.style.left = `${left}px`;
+        hoverCard.style.top = `${top}px`;
+      };
+      app.querySelectorAll('.calendar-event-line').forEach((line) => {
+        line.addEventListener('mouseenter', (event) => {
+          const title = line.getAttribute('data-title') || '';
+          const dateText = line.getAttribute('data-date') || '';
+          const poster = line.getAttribute('data-poster') || '';
+          const fallbackPoster = line.querySelector('.calendar-event-dot.show')
+            ? SHOW_PLACEHOLDER
+            : MOVIE_PLACEHOLDER;
+          hoverCard.innerHTML = `
+            <img class="calendar-event-hover-poster" src="${poster || fallbackPoster}" alt="${title}" />
+            <div class="calendar-event-hover-text">
+              <div class="calendar-event-hover-title">${title}</div>
+              <div class="calendar-event-hover-date">${dateText}</div>
+            </div>
+          `;
+          hoverCard.classList.remove('hidden');
+          placeHoverCard(event.clientX, event.clientY);
+        });
+        line.addEventListener('mousemove', (event) => {
+          if (hoverCard.classList.contains('hidden')) return;
+          placeHoverCard(event.clientX, event.clientY);
+        });
+        line.addEventListener('mouseleave', () => {
+          hoverCard.classList.add('hidden');
+        });
+      });
+    })
+    .catch(() => {
+      // Keep calendar layout visible even if event loading fails.
+    })
+    .finally(() => {
+      if (renderToken !== state.calendarRenderToken) return;
+      const currentGrid = app.querySelector('.calendar-grid-preview');
+      if (currentGrid) currentGrid.classList.remove('is-loading');
+    });
+}
+
+function openCalendarMonthYearPicker(initialYear, initialMonth, onSelect) {
+  document.getElementById('calendar-picker-modal')?.remove();
+  const monthNames = Array.from({ length: 12 }).map((_, index) =>
+    new Date(2000, index, 1).toLocaleDateString('en-US', { month: 'long' }),
+  );
+  const modal = document.createElement('div');
+  modal.id = 'calendar-picker-modal';
+  modal.className = 'calendar-picker-modal';
+  modal.innerHTML = `
+    <div class="calendar-picker-card" role="dialog" aria-modal="true" aria-label="Choose month and year">
+      <div class="calendar-picker-header">
+        <button id="calendar-picker-back" class="toggle-btn hidden" type="button" aria-label="Back to years">‹</button>
+        <h3 id="calendar-picker-title">Choose month</h3>
+        <button id="calendar-picker-close" class="toggle-btn" type="button" aria-label="Close">×</button>
+      </div>
+      <div id="calendar-picker-body" class="calendar-picker-body"></div>
+      <div class="calendar-picker-footer">
+        <button id="calendar-picker-cancel" class="secondary-btn" type="button">Cancel</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  let selectedYear = Number(initialYear);
+  let selectedMonth = Number(initialMonth);
+  let mode = 'months';
+
+  const close = () => {
+    modal.remove();
+  };
+
+  const render = () => {
+    const titleEl = modal.querySelector('#calendar-picker-title');
+    const backBtn = modal.querySelector('#calendar-picker-back');
+    const bodyEl = modal.querySelector('#calendar-picker-body');
+    if (!titleEl || !backBtn || !bodyEl) return;
+
+    if (mode === 'years') {
+      titleEl.textContent = 'Choose year';
+      backBtn.classList.add('hidden');
+      const nowYear = new Date().getFullYear();
+      const maxYear = nowYear + 1;
+      const minYear = nowYear - 1;
+      const years = Array.from({ length: (maxYear - minYear) + 1 }).map((_, index) => maxYear - index);
+      bodyEl.innerHTML = years
+        .map((year) => `<button class="calendar-picker-option ${year === selectedYear ? 'active' : ''}" data-year="${year}" type="button">${year}</button>`)
+        .join('');
+      bodyEl.querySelectorAll('[data-year]').forEach((button) => {
+        button.addEventListener('click', () => {
+          selectedYear = Number(button.getAttribute('data-year'));
+          mode = 'months';
+          render();
+        });
+      });
+      return;
+    }
+
+    titleEl.textContent = `${selectedYear}`;
+    backBtn.classList.remove('hidden');
+    bodyEl.innerHTML = monthNames
+      .map((label, monthIndex) => `<button class="calendar-picker-option ${monthIndex === selectedMonth ? 'active' : ''}" data-month="${monthIndex}" type="button">${label}</button>`)
+      .join('');
+    bodyEl.querySelectorAll('[data-month]').forEach((button) => {
+      button.addEventListener('click', () => {
+        selectedMonth = Number(button.getAttribute('data-month'));
+        if (onSelect) onSelect(selectedYear, selectedMonth);
+        close();
+      });
+    });
+  };
+
+  modal.querySelector('#calendar-picker-close')?.addEventListener('click', close);
+  modal.querySelector('#calendar-picker-cancel')?.addEventListener('click', close);
+  modal.querySelector('#calendar-picker-back')?.addEventListener('click', () => {
+    mode = 'years';
+    render();
+  });
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) close();
+  });
+
+  render();
 }
 
 async function bootstrap() {
