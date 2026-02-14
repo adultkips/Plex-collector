@@ -60,19 +60,19 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
 ## Screenshots
 <table>
   <tr>
-    <td align="center"><img src="screenshots/profile-v2.png" alt="Profile" width="300"><br><sub>Profile</sub></td>
-    <td align="center"><img src="screenshots/seasons-v2.png" alt="Seasons" width="300"><br><sub>Seasons</sub></td>
+    <td align="center"><img src="screenshots/profile-v2.png" alt="Profile" width="420"><br><sub>Profile</sub></td>
+    <td align="center"><img src="screenshots/seasons-v2.png" alt="Seasons" width="420"><br><sub>Seasons</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="screenshots/actors-v2.png" alt="Actors" width="300"><br><sub>Actors</sub></td>
-    <td align="center"><img src="screenshots/episodes-v2.png" alt="Episodes" width="300"><br><sub>Episodes</sub></td>
+    <td align="center"><img src="screenshots/actors-v2.png" alt="Actors" width="420"><br><sub>Actors</sub></td>
+    <td align="center"><img src="screenshots/episodes-v2.png" alt="Episodes" width="420"><br><sub>Episodes</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="screenshots/movies-v2.png" alt="Movies" width="300"><br><sub>Movies</sub></td>
-    <td align="center"><img src="screenshots/shows-v2.png" alt="Shows" width="300"><br><sub>Shows</sub></td>
+    <td align="center"><img src="screenshots/movies-v2.png" alt="Movies" width="420"><br><sub>Movies</sub></td>
+    <td align="center"><img src="screenshots/shows-v2.png" alt="Shows" width="420"><br><sub>Shows</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="screenshots/calendar.png" alt="Calendar" width="300"><br><sub>Calendar</sub></td>
+    <td align="center"><img src="screenshots/calendar.png" alt="Calendar" width="420"><br><sub>Calendar</sub></td>
     <td></td>
   </tr>
 </table>
