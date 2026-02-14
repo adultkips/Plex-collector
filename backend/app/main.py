@@ -30,6 +30,7 @@ from .plex_client import (
     get_account_profile,
     get_resources,
     pick_server_uri,
+    resolve_show_tmdb_ids,
     resolve_movie_section_ids,
     start_pin,
 )
@@ -716,6 +717,29 @@ def ensure_auth() -> tuple[str, dict[str, Any]]:
     return auth_token, server
 
 
+def _resolve_single_show_tmdb_from_plex(show_id: str) -> int | None:
+    """Best-effort TMDb id lookup from Plex GUID for one show."""
+    try:
+        _, server = ensure_auth()
+    except HTTPException:
+        return None
+    except Exception:
+        return None
+
+    uris_to_try = candidate_server_uris(server)
+    for uri in uris_to_try:
+        try:
+            resolved = resolve_show_tmdb_ids(uri, server['token'], [show_id])
+            tmdb_id = resolved.get(show_id)
+            if tmdb_id is not None:
+                server['uri'] = uri
+                set_setting('server', server)
+                return int(tmdb_id)
+        except Exception:
+            continue
+    return None
+
+
 @app.on_event('startup')
 def startup() -> None:
     init_db()
@@ -1369,22 +1393,26 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
             if not tmdb_show_id:
                 found = search_tv_show(show.get('title') or '', show.get('year'))
                 if not found:
-                    failed_total += 1
-                    results.append(
-                        {
-                            'show_id': show_id,
-                            'has_missing_episodes': None,
-                            'missing_episode_count': None,
-                            'missing_new_count': None,
-                            'missing_old_count': None,
-                            'missing_upcoming_count': None,
-                            'missing_scan_at': None,
-                            'missing_upcoming_air_dates': [],
-                            'error': 'TMDb match not found',
-                        }
-                    )
-                    continue
-                tmdb_show_id = int(found['id'])
+                    plex_tmdb_id = _resolve_single_show_tmdb_from_plex(show_id)
+                    if plex_tmdb_id is None:
+                        failed_total += 1
+                        results.append(
+                            {
+                                'show_id': show_id,
+                                'has_missing_episodes': None,
+                                'missing_episode_count': None,
+                                'missing_new_count': None,
+                                'missing_old_count': None,
+                                'missing_upcoming_count': None,
+                                'missing_scan_at': None,
+                                'missing_upcoming_air_dates': [],
+                                'error': 'TMDb match not found',
+                            }
+                        )
+                        continue
+                    tmdb_show_id = int(plex_tmdb_id)
+                else:
+                    tmdb_show_id = int(found['id'])
                 tmdb_id_updates.append((tmdb_show_id, now_iso, show_id))
 
             plex_episode_set = plex_episode_set_by_show.get(show_id, set())
@@ -1970,11 +1998,20 @@ def show_seasons(
         if not show_data['tmdb_show_id']:
             found = search_tv_show(show_data['title'], show_data.get('year'))
             if not found:
-                return {'show': show_data, 'items': []}
-            show_data['tmdb_show_id'] = found['id']
+                plex_tmdb_id = _resolve_single_show_tmdb_from_plex(show_id)
+                if plex_tmdb_id is None:
+                    return {'show': show_data, 'items': []}
+                show_data['tmdb_show_id'] = plex_tmdb_id
+            else:
+                show_data['tmdb_show_id'] = found['id']
             conn.execute(
                 'UPDATE plex_shows SET tmdb_show_id = ?, image_url = COALESCE(image_url, ?), updated_at = ? WHERE show_id = ?',
-                (found['id'], found['poster_url'], datetime.now(UTC).isoformat(), show_id),
+                (
+                    show_data['tmdb_show_id'],
+                    (found['poster_url'] if found else None),
+                    datetime.now(UTC).isoformat(),
+                    show_id,
+                ),
             )
             conn.commit()
 
@@ -2104,11 +2141,20 @@ def show_season_episodes(
         if not show_data['tmdb_show_id']:
             found = search_tv_show(show_data['title'], show_data.get('year'))
             if not found:
-                return {'show': show_data, 'season_number': season_number, 'items': []}
-            show_data['tmdb_show_id'] = found['id']
+                plex_tmdb_id = _resolve_single_show_tmdb_from_plex(show_id)
+                if plex_tmdb_id is None:
+                    return {'show': show_data, 'season_number': season_number, 'items': []}
+                show_data['tmdb_show_id'] = plex_tmdb_id
+            else:
+                show_data['tmdb_show_id'] = found['id']
             conn.execute(
                 'UPDATE plex_shows SET tmdb_show_id = ?, image_url = COALESCE(image_url, ?), updated_at = ? WHERE show_id = ?',
-                (found['id'], found['poster_url'], datetime.now(UTC).isoformat(), show_id),
+                (
+                    show_data['tmdb_show_id'],
+                    (found['poster_url'] if found else None),
+                    datetime.now(UTC).isoformat(),
+                    show_id,
+                ),
             )
             conn.commit()
 
