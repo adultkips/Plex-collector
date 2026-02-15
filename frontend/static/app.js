@@ -36,11 +36,68 @@ const CACHE_KEYS = {
   actors: 'pc_cache_actors_v1',
   shows: 'pc_cache_shows_v1',
 };
+const CAST_ROLES = ['actor', 'director', 'writer'];
+const CAST_ROLE_LABELS = {
+  actor: 'Actors',
+  director: 'Directors',
+  writer: 'Writers',
+};
+const CAST_ROLE_ICONS = {
+  actor: '/assets/actor.png',
+  director: '/assets/director.png',
+  writer: '/assets/writer.png',
+};
+const CAST_ROLE_STORAGE_KEY = 'castRole';
+const SHOW_SEASONS_CACHE_PREFIX = 'pc_cache_show_seasons_v1_';
+const SHOW_EPISODES_CACHE_PREFIX = 'pc_cache_show_episodes_v1_';
 const CACHE_TTL_MS = {
   profile: 1000 * 60 * 60 * 6,
   actors: 1000 * 60 * 60 * 24,
   shows: 1000 * 60 * 60 * 24,
+  showDetail: 1000 * 60 * 60 * 24,
 };
+const LAST_ROUTE_KEY = 'lastAppRoute';
+const LAST_CAST_ROUTE_KEY = 'lastCastRoute';
+const LAST_SHOWS_ROUTE_KEY = 'lastShowsRoute';
+const CALENDAR_VIEW_MODE_KEY = 'calendarViewMode';
+const CALENDAR_SELECTED_DATE_KEY = 'calendarSelectedDate';
+const CALENDAR_CURSOR_KEY = 'calendarCursor';
+const SHOULD_RESTORE_LAST_ROUTE_ON_BOOT = (() => {
+  try {
+    const navEntry = performance.getEntriesByType('navigation')?.[0];
+    const navType = navEntry?.type || '';
+    return navType === 'reload';
+  } catch {
+    return false;
+  }
+})();
+let hasCheckedBootRouteRestore = false;
+
+function readCalendarCursorFromStorage() {
+  try {
+    const raw = localStorage.getItem(CALENDAR_CURSOR_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const year = Number(parsed?.year);
+    const month = Number(parsed?.month);
+    if (!Number.isInteger(year) || !Number.isInteger(month)) return null;
+    if (month < 0 || month > 11) return null;
+    return { year, month };
+  } catch {
+    return null;
+  }
+}
+
+function getCastRoleFromQuery() {
+  const role = new URLSearchParams(window.location.search).get('role') || '';
+  const normalized = role.trim().toLowerCase();
+  return CAST_ROLES.includes(normalized) ? normalized : '';
+}
+
+function getActorsCacheKey(role) {
+  const normalized = CAST_ROLES.includes(role) ? role : 'actor';
+  return `${CACHE_KEYS.actors}_${normalized}`;
+}
 
 const state = {
   session: null,
@@ -49,6 +106,7 @@ const state = {
   profile: null,
   currentView: 'profile',
   actorsLoaded: false,
+  actorsLoadedRole: '',
   showsLoaded: false,
   profileLoaded: false,
   actorsSearchOpen: false,
@@ -96,6 +154,7 @@ const state = {
   showPrefetchControllers: new Set(),
   actorsInitialFilter: localStorage.getItem('actorsInitialFilter') || 'All',
   actorsVisibleCount: ACTORS_BATCH_SIZE,
+  castRole: localStorage.getItem(CAST_ROLE_STORAGE_KEY) || '',
   actorsImageObserver: null,
   imageCacheKey: localStorage.getItem('imageCacheKey') || '1',
   createCollectionBusy: false,
@@ -105,8 +164,10 @@ const state = {
   profileLastRefreshAt: 0,
   actorsLastRefreshAt: 0,
   showsLastRefreshAt: 0,
-  calendarCursor: null,
+  calendarCursor: readCalendarCursorFromStorage(),
   calendarRenderToken: 0,
+  calendarViewMode: localStorage.getItem(CALENDAR_VIEW_MODE_KEY) === 'day' ? 'day' : 'month',
+  calendarSelectedDate: localStorage.getItem(CALENDAR_SELECTED_DATE_KEY) || null,
   calendarShowMovies: localStorage.getItem('calendarShowMovies') !== '0',
   calendarShowShows: localStorage.getItem('calendarShowShows') !== '0',
 };
@@ -121,9 +182,16 @@ const LOCAL_STORAGE_RESET_KEYS = [
   'showsEpisodesSortDir',
   'showsInitialFilter',
   'actorsInitialFilter',
+  CAST_ROLE_STORAGE_KEY,
   'moviesSortBy',
   'moviesSortDir',
   'imageCacheKey',
+  LAST_ROUTE_KEY,
+  LAST_CAST_ROUTE_KEY,
+  LAST_SHOWS_ROUTE_KEY,
+  CALENDAR_VIEW_MODE_KEY,
+  CALENDAR_SELECTED_DATE_KEY,
+  CALENDAR_CURSOR_KEY,
   CACHE_KEYS.profile,
   CACHE_KEYS.actors,
   CACHE_KEYS.shows,
@@ -131,8 +199,30 @@ const LOCAL_STORAGE_RESET_KEYS = [
 let plexAuthPopup = null;
 
 navProfile.addEventListener('click', () => routeTo('profile'));
-navActors.addEventListener('click', () => routeTo('actors'));
-navShows.addEventListener('click', () => routeTo('shows'));
+navActors.addEventListener('click', () => {
+  const currentPath = window.location.pathname;
+  if (currentPath.startsWith('/cast')) {
+    history.pushState({}, '', '/cast');
+    handleLocation();
+    return;
+  }
+  routeTo('actors');
+});
+navShows.addEventListener('click', () => {
+  const currentPath = window.location.pathname;
+  if (currentPath.startsWith('/shows')) {
+    history.pushState({}, '', '/shows');
+    handleLocation();
+    return;
+  }
+  let target = '/shows';
+  try {
+    const stored = localStorage.getItem(LAST_SHOWS_ROUTE_KEY) || '';
+    if (stored.startsWith('/shows')) target = stored;
+  } catch {}
+  history.pushState({}, '', target);
+  handleLocation();
+});
 navCalendar.addEventListener('click', () => routeTo('calendar'));
 
 window.addEventListener('popstate', handleLocation);
@@ -275,13 +365,185 @@ function clearPersistentCache(cacheKey) {
   } catch {}
 }
 
+function persistLastRoute(pathname = window.location.pathname) {
+  const normalized = String(pathname || '').trim();
+  if (!normalized.startsWith('/')) return;
+  try {
+    localStorage.setItem(LAST_ROUTE_KEY, normalized);
+  } catch {}
+}
+
+function persistLastCastRoute(pathAndQuery = `${window.location.pathname}${window.location.search || ''}`) {
+  const normalized = String(pathAndQuery || '').trim();
+  if (!normalized.startsWith('/cast')) return;
+  try {
+    localStorage.setItem(LAST_CAST_ROUTE_KEY, normalized);
+  } catch {}
+}
+
+function persistLastShowsRoute(pathAndQuery = `${window.location.pathname}${window.location.search || ''}`) {
+  const normalized = String(pathAndQuery || '').trim();
+  if (!normalized.startsWith('/shows')) return;
+  try {
+    localStorage.setItem(LAST_SHOWS_ROUTE_KEY, normalized);
+  } catch {}
+}
+
+function applyCalendarUrlState() {
+  const params = new URLSearchParams(window.location.search);
+  const hasCalendarState =
+    params.has('view') || params.has('date') || params.has('year') || params.has('month') || params.has('types');
+  if (!hasCalendarState) return false;
+
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const view = params.get('view') === 'day' ? 'day' : 'month';
+
+  const yearRaw = Number(params.get('year'));
+  const monthRaw = Number(params.get('month'));
+  let cursorYear = Number.isInteger(yearRaw) ? yearRaw : todayStart.getFullYear();
+  let cursorMonth = Number.isInteger(monthRaw) ? (monthRaw - 1) : todayStart.getMonth();
+  if (cursorMonth < 0 || cursorMonth > 11) cursorMonth = todayStart.getMonth();
+
+  let selectedDate = null;
+  if (view === 'day') {
+    const rawDate = String(params.get('date') || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+      const parsed = new Date(rawDate);
+      if (!Number.isNaN(parsed.getTime())) {
+        selectedDate = rawDate;
+        cursorYear = parsed.getFullYear();
+        cursorMonth = parsed.getMonth();
+      }
+    }
+    if (!selectedDate) {
+      selectedDate = `${todayStart.getFullYear()}-${String(todayStart.getMonth() + 1).padStart(2, '0')}-${String(todayStart.getDate()).padStart(2, '0')}`;
+      cursorYear = todayStart.getFullYear();
+      cursorMonth = todayStart.getMonth();
+    }
+  }
+
+  const types = String(params.get('types') || 'all').toLowerCase();
+  if (types === 'movie') {
+    state.calendarShowMovies = true;
+    state.calendarShowShows = false;
+  } else if (types === 'show') {
+    state.calendarShowMovies = false;
+    state.calendarShowShows = true;
+  } else {
+    state.calendarShowMovies = true;
+    state.calendarShowShows = true;
+  }
+
+  state.calendarViewMode = view;
+  state.calendarSelectedDate = selectedDate;
+  state.calendarCursor = { year: cursorYear, month: cursorMonth };
+  persistCalendarViewState();
+  localStorage.setItem('calendarShowMovies', state.calendarShowMovies ? '1' : '0');
+  localStorage.setItem('calendarShowShows', state.calendarShowShows ? '1' : '0');
+  return true;
+}
+
+function syncCalendarUrl(historyMode = 'replace') {
+  if (window.location.pathname !== '/calendar') return;
+  const params = new URLSearchParams();
+  const mode = state.calendarViewMode === 'day' ? 'day' : 'month';
+  params.set('view', mode);
+  if (state.calendarCursor && Number.isInteger(Number(state.calendarCursor.year)) && Number.isInteger(Number(state.calendarCursor.month))) {
+    params.set('year', String(Number(state.calendarCursor.year)));
+    params.set('month', String(Number(state.calendarCursor.month) + 1));
+  }
+  if (mode === 'day' && state.calendarSelectedDate) {
+    params.set('date', state.calendarSelectedDate);
+  }
+  const isMovieOnly = state.calendarShowMovies && !state.calendarShowShows;
+  const isShowOnly = !state.calendarShowMovies && state.calendarShowShows;
+  params.set('types', isMovieOnly ? 'movie' : (isShowOnly ? 'show' : 'all'));
+
+  const nextUrl = `/calendar?${params.toString()}`;
+  const currentUrl = `${window.location.pathname}${window.location.search}`;
+  if (nextUrl === currentUrl) return;
+  if (historyMode === 'push') {
+    history.pushState({}, '', nextUrl);
+  } else {
+    history.replaceState({}, '', nextUrl);
+  }
+}
+
+function persistCalendarViewState() {
+  try {
+    localStorage.setItem(CALENDAR_VIEW_MODE_KEY, state.calendarViewMode === 'day' ? 'day' : 'month');
+    if (state.calendarSelectedDate) {
+      localStorage.setItem(CALENDAR_SELECTED_DATE_KEY, state.calendarSelectedDate);
+    } else {
+      localStorage.removeItem(CALENDAR_SELECTED_DATE_KEY);
+    }
+    if (state.calendarCursor && Number.isInteger(Number(state.calendarCursor.year)) && Number.isInteger(Number(state.calendarCursor.month))) {
+      localStorage.setItem(
+        CALENDAR_CURSOR_KEY,
+        JSON.stringify({
+          year: Number(state.calendarCursor.year),
+          month: Number(state.calendarCursor.month),
+        }),
+      );
+    } else {
+      localStorage.removeItem(CALENDAR_CURSOR_KEY);
+    }
+  } catch {}
+}
+
 function clearPrimaryDataCaches() {
   clearPersistentCache(CACHE_KEYS.profile);
-  clearPersistentCache(CACHE_KEYS.actors);
+  for (const role of CAST_ROLES) {
+    clearPersistentCache(getActorsCacheKey(role));
+  }
   clearPersistentCache(CACHE_KEYS.shows);
+  clearShowDetailPersistentCaches();
   state.profileLastRefreshAt = 0;
   state.actorsLastRefreshAt = 0;
   state.showsLastRefreshAt = 0;
+}
+
+function showSeasonsPersistentKey(cacheKey) {
+  return `${SHOW_SEASONS_CACHE_PREFIX}${encodeURIComponent(cacheKey)}`;
+}
+
+function showEpisodesPersistentKey(cacheKey) {
+  return `${SHOW_EPISODES_CACHE_PREFIX}${encodeURIComponent(cacheKey)}`;
+}
+
+function readShowSeasonsPersistentCache(cacheKey) {
+  return readPersistentCache(showSeasonsPersistentKey(cacheKey), CACHE_TTL_MS.showDetail);
+}
+
+function readShowEpisodesPersistentCache(cacheKey) {
+  return readPersistentCache(showEpisodesPersistentKey(cacheKey), CACHE_TTL_MS.showDetail);
+}
+
+function writeShowSeasonsPersistentCache(cacheKey, data) {
+  writePersistentCache(showSeasonsPersistentKey(cacheKey), data);
+}
+
+function writeShowEpisodesPersistentCache(cacheKey, data) {
+  writePersistentCache(showEpisodesPersistentKey(cacheKey), data);
+}
+
+function clearShowDetailPersistentCaches(showId = null) {
+  const removeKeys = [];
+  const seasonsNeedle = showId ? `${SHOW_SEASONS_CACHE_PREFIX}${encodeURIComponent(`${showId}|`)}` : SHOW_SEASONS_CACHE_PREFIX;
+  const episodesNeedle = showId ? `${SHOW_EPISODES_CACHE_PREFIX}${encodeURIComponent(`${showId}|`)}` : SHOW_EPISODES_CACHE_PREFIX;
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (!key) continue;
+    if (key.startsWith(seasonsNeedle) || key.startsWith(episodesNeedle)) {
+      removeKeys.push(key);
+    }
+  }
+  for (const key of removeKeys) {
+    try {
+      localStorage.removeItem(key);
+    } catch {}
+  }
 }
 
 function invalidateShowDetailCaches(showId) {
@@ -293,6 +555,7 @@ function invalidateShowDetailCaches(showId) {
   state.showEpisodesCache = Object.fromEntries(
     Object.entries(state.showEpisodesCache).filter(([key]) => !key.startsWith(episodePrefix)),
   );
+  clearShowDetailPersistentCaches(showId);
 }
 
 function applyImageFallback(img, fallbackSrc) {
@@ -558,6 +821,15 @@ function isTodayOrFutureDate(value) {
   return value >= todayKey;
 }
 
+function isFutureDate(value) {
+  if (!value || typeof value !== 'string') return false;
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const today = new Date();
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  return value > todayKey;
+}
+
 function applyShowMissingScanUpdate(updated) {
   if (!updated || !updated.show_id) return;
   const idx = state.shows.findIndex((s) => String(s.show_id) === String(updated.show_id));
@@ -607,11 +879,25 @@ function applyActorMissingScanUpdate(updated) {
 
 function routeTo(view, actorId = null) {
   if (view === 'actor-detail' && actorId) {
-    history.pushState({}, '', `/actors/${actorId}`);
+    const role = CAST_ROLES.includes(state.castRole) ? state.castRole : '';
+    const query = role ? `?role=${encodeURIComponent(role)}` : '';
+    history.pushState({}, '', `/cast/${actorId}${query}`);
   } else if (view === 'show-detail' && actorId) {
     history.pushState({}, '', `/shows/${actorId}`);
+  } else if (view === 'actors') {
+    let target = '';
+    try {
+      const stored = localStorage.getItem(LAST_CAST_ROUTE_KEY) || '';
+      if (stored.startsWith('/cast')) target = stored;
+    } catch {}
+    if (!target) {
+      const role = CAST_ROLES.includes(state.castRole) ? state.castRole : '';
+      const query = role ? `?role=${encodeURIComponent(role)}` : '';
+      target = `/cast${query}`;
+    }
+    history.pushState({}, '', target);
   } else {
-    history.pushState({}, '', `/${view === 'profile' ? '' : view}`);
+    history.pushState({}, '', `/${view}`);
   }
   handleLocation();
 }
@@ -640,6 +926,27 @@ async function handleLocation() {
   cancelShowPrefetches();
   resetShowImageQueue();
   const path = window.location.pathname;
+  const shouldTryBootRouteRestore = !hasCheckedBootRouteRestore && SHOULD_RESTORE_LAST_ROUTE_ON_BOOT && path === '/';
+  hasCheckedBootRouteRestore = true;
+  if (shouldTryBootRouteRestore) {
+    const savedPath = localStorage.getItem(LAST_ROUTE_KEY);
+    if (savedPath && savedPath !== '/' && savedPath.startsWith('/')) {
+      history.replaceState({}, '', savedPath);
+      handleLocation();
+      return;
+    }
+  }
+  if (path === '/') {
+    history.replaceState({}, '', '/profile');
+    handleLocation();
+    return;
+  }
+  if (path === '/actors' || path.startsWith('/actors/')) {
+    const nextPath = path.replace('/actors', '/cast');
+    history.replaceState({}, '', `${nextPath}${window.location.search || ''}`);
+    handleLocation();
+    return;
+  }
   document.body.classList.remove('calendar-view');
 
   if (!state.session) {
@@ -664,24 +971,38 @@ async function handleLocation() {
     return;
   }
 
-  if (path.startsWith('/actors/')) {
+  if (path.startsWith('/cast/')) {
+    persistLastRoute(path);
+    persistLastCastRoute(`${path}${window.location.search || ''}`);
     setFullWidthGridMode(true);
     setNavVisible(true);
+    const detailRole = getCastRoleFromQuery();
+    if (detailRole) {
+      state.castRole = detailRole;
+      localStorage.setItem(CAST_ROLE_STORAGE_KEY, detailRole);
+    }
     const actorId = path.split('/').pop();
     await renderActorDetail(actorId);
     setActiveNav('actors');
     return;
   }
 
-  if (path === '/actors') {
+  if (path === '/cast') {
+    persistLastRoute(path);
+    persistLastCastRoute(`${path}${window.location.search || ''}`);
     setFullWidthGridMode(true);
     setNavVisible(true);
+    const roleFromQuery = getCastRoleFromQuery();
+    state.castRole = roleFromQuery;
+    if (roleFromQuery) localStorage.setItem(CAST_ROLE_STORAGE_KEY, roleFromQuery);
     await renderActors();
     setActiveNav('actors');
     return;
   }
 
   if (path.startsWith('/shows/')) {
+    persistLastRoute(path);
+    persistLastShowsRoute(`${path}${window.location.search || ''}`);
     setFullWidthGridMode(true);
     setNavVisible(true);
     const seasonMatch = path.match(/^\/shows\/([^/]+)\/seasons\/(\d+)$/);
@@ -697,6 +1018,8 @@ async function handleLocation() {
   }
 
   if (path === '/shows') {
+    persistLastRoute(path);
+    persistLastShowsRoute(`${path}${window.location.search || ''}`);
     setFullWidthGridMode(true);
     setNavVisible(true);
     await renderShows();
@@ -705,6 +1028,9 @@ async function handleLocation() {
   }
 
   if (path === '/calendar') {
+    applyCalendarUrlState();
+    syncCalendarUrl('replace');
+    persistLastRoute(path);
     document.body.classList.add('calendar-view');
     setFullWidthGridMode(false);
     setNavVisible(true);
@@ -713,6 +1039,7 @@ async function handleLocation() {
     return;
   }
 
+  persistLastRoute('/profile');
   setFullWidthGridMode(false);
   setNavVisible(true);
   await renderProfile();
@@ -725,8 +1052,11 @@ function renderCalendar() {
   if (!state.calendarCursor) {
     state.calendarCursor = { year: todayStart.getFullYear(), month: todayStart.getMonth() };
   }
+  persistCalendarViewState();
+  syncCalendarUrl('replace');
   const year = Number(state.calendarCursor.year);
   const month = Number(state.calendarCursor.month);
+  const dayViewActive = state.calendarViewMode === 'day' && !!state.calendarSelectedDate;
   const movieOnly = state.calendarShowMovies && !state.calendarShowShows;
   const showOnly = !state.calendarShowMovies && state.calendarShowShows;
   const firstOfMonth = new Date(year, month, 1);
@@ -740,8 +1070,12 @@ function renderCalendar() {
     const d = String(date.getDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
   };
-  const rangeStart = formatDateKey(gridStart);
-  const rangeEnd = formatDateKey(gridEnd);
+  const selectedDay = dayViewActive ? new Date(state.calendarSelectedDate) : null;
+  const selectedDayKey = selectedDay ? formatDateKey(selectedDay) : null;
+  const rangeStart = dayViewActive && selectedDayKey ? selectedDayKey : formatDateKey(gridStart);
+  const rangeEnd = dayViewActive && selectedDayKey ? selectedDayKey : formatDateKey(gridEnd);
+  const navPrevLabel = dayViewActive ? 'Previous day' : 'Previous month';
+  const navNextLabel = dayViewActive ? 'Next day' : 'Next month';
   const dayCells = Array.from({ length: 42 }).map((_, index) => {
     const cellDate = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
     const dateKey = formatDateKey(cellDate);
@@ -756,27 +1090,57 @@ function renderCalendar() {
     ].filter(Boolean).join(' ');
     return `
       <div class="${className}" data-date="${dateKey}">
-        <span class="calendar-day-number">${cellDate.getDate()}</span>
+        <button class="calendar-day-number calendar-day-number-btn has-pill-tooltip" type="button" data-open-day="${dateKey}" aria-label="Open ${dateKey}" data-tooltip="View date">
+          ${cellDate.getDate()}
+        </button>
         <div class="calendar-day-events"></div>
       </div>
     `;
   }).join('');
+  const dayViewTitle = selectedDay
+    ? selectedDay.toLocaleDateString('en-US', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })
+    : '';
   app.innerHTML = `
     <section class="card calendar-layout-card">
       <div class="calendar-layout-header">
-        <button id="calendar-prev-btn" class="toggle-btn" type="button" aria-label="Previous month">‹</button>
+        <button id="calendar-prev-btn" class="toggle-btn has-pill-tooltip" type="button" aria-label="${navPrevLabel}" data-tooltip="${navPrevLabel}">‹</button>
         <div class="calendar-layout-center">
-          <button id="calendar-open-picker" class="calendar-month-year-btn" type="button" aria-label="Choose month and year">${monthLabel}</button>
           <button id="calendar-today-btn" class="secondary-btn" type="button">Today</button>
+          <button id="calendar-open-picker" class="calendar-month-year-btn" type="button" aria-label="Choose month and year">${monthLabel}</button>
+          <button id="calendar-view-toggle" class="secondary-btn calendar-view-toggle-btn has-pill-tooltip ${dayViewActive ? 'active' : ''}" type="button" aria-label="${dayViewActive ? 'Switch to month view' : 'Switch to day view'}" title="${dayViewActive ? 'Month view' : 'Day view'}" data-tooltip="${dayViewActive ? 'Month view' : 'Day view'}">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 6h2v2H4V6Zm4 0h12v2H8V6Zm-4 5h2v2H4v-2Zm4 0h12v2H8v-2Zm-4 5h2v2H4v-2Zm4 0h12v2H8v-2Z"/>
+            </svg>
+          </button>
         </div>
-        <button id="calendar-next-btn" class="toggle-btn" type="button" aria-label="Next month">›</button>
+        <button id="calendar-next-btn" class="toggle-btn has-pill-tooltip" type="button" aria-label="${navNextLabel}" data-tooltip="${navNextLabel}">›</button>
       </div>
-      <div class="calendar-weekdays">
-        <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
-      </div>
-      <div class="calendar-grid-preview">
-        ${dayCells}
-      </div>
+      ${
+        dayViewActive
+          ? `
+            <div class="calendar-day-view">
+              <div class="calendar-day-view-title">${dayViewTitle}</div>
+              <div class="calendar-day-view-columns">
+                <section class="calendar-day-view-column">
+                  <h3>Movies</h3>
+                  <div class="calendar-day-view-list" id="calendar-day-view-list-movies"></div>
+                </section>
+                <section class="calendar-day-view-column">
+                  <h3>Shows</h3>
+                  <div class="calendar-day-view-list" id="calendar-day-view-list-shows"></div>
+                </section>
+              </div>
+            </div>
+          `
+          : `
+            <div class="calendar-weekdays">
+              <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+            </div>
+            <div class="calendar-grid-preview">
+              ${dayCells}
+            </div>
+          `
+      }
       <div class="calendar-type-legend">
         <button id="calendar-toggle-movie" class="calendar-type-legend-item ${movieOnly ? 'active' : ''}" type="button" aria-pressed="${movieOnly ? 'true' : 'false'}">
           <i class="calendar-event-dot movie" aria-hidden="true"></i>Movie
@@ -799,6 +1163,8 @@ function renderCalendar() {
     }
     localStorage.setItem('calendarShowMovies', state.calendarShowMovies ? '1' : '0');
     localStorage.setItem('calendarShowShows', state.calendarShowShows ? '1' : '0');
+    persistCalendarViewState();
+    syncCalendarUrl('push');
     renderCalendar();
   });
   document.getElementById('calendar-toggle-show')?.addEventListener('click', () => {
@@ -812,26 +1178,82 @@ function renderCalendar() {
     }
     localStorage.setItem('calendarShowMovies', state.calendarShowMovies ? '1' : '0');
     localStorage.setItem('calendarShowShows', state.calendarShowShows ? '1' : '0');
+    persistCalendarViewState();
+    syncCalendarUrl('push');
     renderCalendar();
   });
 
   document.getElementById('calendar-prev-btn')?.addEventListener('click', () => {
-    const next = new Date(year, month - 1, 1);
-    state.calendarCursor = { year: next.getFullYear(), month: next.getMonth() };
+    if (dayViewActive && selectedDay) {
+      const next = new Date(selectedDay.getFullYear(), selectedDay.getMonth(), selectedDay.getDate() - 1);
+      state.calendarSelectedDate = formatDateKey(next);
+      state.calendarCursor = { year: next.getFullYear(), month: next.getMonth() };
+    } else {
+      const next = new Date(year, month - 1, 1);
+      state.calendarCursor = { year: next.getFullYear(), month: next.getMonth() };
+    }
+    persistCalendarViewState();
+    syncCalendarUrl('push');
     renderCalendar();
   });
   document.getElementById('calendar-next-btn')?.addEventListener('click', () => {
-    const next = new Date(year, month + 1, 1);
-    state.calendarCursor = { year: next.getFullYear(), month: next.getMonth() };
+    if (dayViewActive && selectedDay) {
+      const next = new Date(selectedDay.getFullYear(), selectedDay.getMonth(), selectedDay.getDate() + 1);
+      state.calendarSelectedDate = formatDateKey(next);
+      state.calendarCursor = { year: next.getFullYear(), month: next.getMonth() };
+    } else {
+      const next = new Date(year, month + 1, 1);
+      state.calendarCursor = { year: next.getFullYear(), month: next.getMonth() };
+    }
+    persistCalendarViewState();
+    syncCalendarUrl('push');
     renderCalendar();
   });
   document.getElementById('calendar-today-btn')?.addEventListener('click', () => {
     state.calendarCursor = { year: todayStart.getFullYear(), month: todayStart.getMonth() };
+    if (dayViewActive) {
+      state.calendarSelectedDate = formatDateKey(todayStart);
+    }
+    persistCalendarViewState();
+    syncCalendarUrl('push');
     renderCalendar();
   });
   document.getElementById('calendar-open-picker')?.addEventListener('click', () => {
     openCalendarMonthYearPicker(year, month, (pickedYear, pickedMonth) => {
       state.calendarCursor = { year: pickedYear, month: pickedMonth };
+      state.calendarViewMode = 'month';
+      state.calendarSelectedDate = null;
+      persistCalendarViewState();
+      syncCalendarUrl('push');
+      renderCalendar();
+    });
+  });
+  document.getElementById('calendar-view-toggle')?.addEventListener('click', () => {
+    if (dayViewActive) {
+      state.calendarViewMode = 'month';
+      state.calendarSelectedDate = null;
+      state.calendarCursor = { year: todayStart.getFullYear(), month: todayStart.getMonth() };
+    } else {
+      state.calendarViewMode = 'day';
+      state.calendarSelectedDate = formatDateKey(todayStart);
+      state.calendarCursor = { year: todayStart.getFullYear(), month: todayStart.getMonth() };
+    }
+    persistCalendarViewState();
+    syncCalendarUrl('push');
+    renderCalendar();
+  });
+  app.querySelectorAll('[data-open-day]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const dateKey = btn.getAttribute('data-open-day');
+      if (!dateKey) return;
+      state.calendarViewMode = 'day';
+      state.calendarSelectedDate = dateKey;
+      const selected = new Date(dateKey);
+      if (!Number.isNaN(selected.getTime())) {
+        state.calendarCursor = { year: selected.getFullYear(), month: selected.getMonth() };
+      }
+      persistCalendarViewState();
+      syncCalendarUrl('push');
       renderCalendar();
     });
   });
@@ -854,12 +1276,7 @@ function renderCalendar() {
         if (!byDate.has(dateKey)) byDate.set(dateKey, []);
         byDate.get(dateKey).push(item);
       }
-      app.querySelectorAll('.calendar-day-cell').forEach((cell) => {
-        const dateKey = cell.getAttribute('data-date');
-        const container = cell.querySelector('.calendar-day-events');
-        if (!container || !dateKey) return;
-        const events = byDate.get(dateKey) || [];
-        container.innerHTML = events.map((event) => {
+      const renderMonthEventsHtml = (events) => events.map((event) => {
           const type = event?.type === 'show' ? 'show' : 'movie';
           const title = String(event?.title || '').trim();
           const posterUrl = withImageCacheKey(String(event?.poster_url || '').trim());
@@ -876,9 +1293,86 @@ function renderCalendar() {
             </div>
           `;
         }).join('');
-      });
+      const renderDayEventsHtml = (events) => events.map((event) => {
+          const type = event?.type === 'show' ? 'show' : 'movie';
+          const rawTitle = String(event?.title || '').trim() || 'Untitled';
+          const posterUrl = withImageCacheKey(String(event?.poster_url || '').trim());
+          const eventDateKey = String(event?.date || '').trim();
+          const dateText = formatDateDdMmYyyy(eventDateKey);
+          const fallbackPoster = type === 'show' ? SHOW_PLACEHOLDER : MOVIE_PLACEHOLDER;
+          const today = new Date();
+          const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+          const showDownload = eventDateKey && eventDateKey <= todayKey;
+          let displayTitle = rawTitle;
+          let showMeta = '';
+          let downloadUrl = '';
+          if (type === 'show') {
+            const match = rawTitle.match(/^(.*?)\s+S(\d+)E(\d+)\s+-\s+.*$/i);
+            if (match) {
+              const showName = (match[1] || '').trim();
+              const seasonNo = String(match[2] || '').padStart(2, '0');
+              const episodeNo = String(match[3] || '').padStart(2, '0');
+              displayTitle = showName || rawTitle;
+              showMeta = `Season ${seasonNo} · Episode ${episodeNo}`;
+              if (showDownload) {
+                downloadUrl = buildDownloadLink(
+                  'episode',
+                  buildEpisodeKeyword(displayTitle, Number(seasonNo), Number(episodeNo)),
+                );
+              }
+            }
+          } else if (showDownload) {
+            downloadUrl = buildDownloadLink('movie', rawTitle);
+          }
+          const downloadBadge = showDownload
+            ? (
+              downloadUrl
+                ? `<a class="badge-link badge-download calendar-day-download-btn" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">&#8595;</span></a>`
+                : '<span class="badge-link badge-download badge-disabled calendar-day-download-btn">Download <span class="badge-icon badge-icon-download">&#8595;</span></span>'
+            )
+            : '';
+          return `
+            <div class="calendar-day-event-item">
+              <span class="calendar-day-event-type-dot ${type}" aria-hidden="true"></span>
+              <img class="calendar-day-event-poster" src="${posterUrl || fallbackPoster}" alt="${escapeHtml(displayTitle)}" loading="lazy" />
+              <div class="calendar-day-event-body">
+                <div class="calendar-day-event-title">${escapeHtml(displayTitle)}</div>
+                ${showMeta ? `<div class="calendar-day-event-meta">${escapeHtml(showMeta)}</div>` : ''}
+                <div class="calendar-day-event-date">${escapeHtml(dateText)}</div>
+                ${downloadBadge}
+              </div>
+            </div>
+          `;
+        }).join('');
+
+      if (dayViewActive && selectedDayKey) {
+        const dayEvents = byDate.get(selectedDayKey) || [];
+        const dayMovies = dayEvents.filter((event) => (event?.type === 'show' ? 'show' : 'movie') === 'movie');
+        const dayShows = dayEvents.filter((event) => (event?.type === 'show' ? 'show' : 'movie') === 'show');
+        const dayMoviesList = document.getElementById('calendar-day-view-list-movies');
+        const dayShowsList = document.getElementById('calendar-day-view-list-shows');
+        if (dayMoviesList) {
+          dayMoviesList.innerHTML = dayMovies.length
+            ? renderDayEventsHtml(dayMovies)
+            : '<div class="empty">No movie events.</div>';
+        }
+        if (dayShowsList) {
+          dayShowsList.innerHTML = dayShows.length
+            ? renderDayEventsHtml(dayShows)
+            : '<div class="empty">No show events.</div>';
+        }
+      } else {
+        app.querySelectorAll('.calendar-day-cell').forEach((cell) => {
+          const dateKey = cell.getAttribute('data-date');
+          const container = cell.querySelector('.calendar-day-events');
+          if (!container || !dateKey) return;
+          const events = byDate.get(dateKey) || [];
+          container.innerHTML = renderMonthEventsHtml(events);
+        });
+      }
       const existingHoverCard = document.getElementById('calendar-event-hover-card');
       if (existingHoverCard) existingHoverCard.remove();
+      if (dayViewActive) return;
       const hoverCard = document.createElement('div');
       hoverCard.id = 'calendar-event-hover-card';
       hoverCard.className = 'calendar-event-hover-card hidden';
@@ -897,16 +1391,28 @@ function renderCalendar() {
       };
       app.querySelectorAll('.calendar-event-line').forEach((line) => {
         line.addEventListener('mouseenter', (event) => {
-          const title = line.getAttribute('data-title') || '';
+          const rawTitle = line.getAttribute('data-title') || '';
           const dateText = line.getAttribute('data-date') || '';
           const poster = line.getAttribute('data-poster') || '';
-          const fallbackPoster = line.querySelector('.calendar-event-dot.show')
-            ? SHOW_PLACEHOLDER
-            : MOVIE_PLACEHOLDER;
+          const isShow = !!line.querySelector('.calendar-event-dot.show');
+          const fallbackPoster = isShow ? SHOW_PLACEHOLDER : MOVIE_PLACEHOLDER;
+          let displayTitle = rawTitle;
+          let displayMeta = '';
+          if (isShow) {
+            const match = rawTitle.match(/^(.*?)\s+S(\d+)E(\d+)\s+-\s+.*$/i);
+            if (match) {
+              const showName = (match[1] || '').trim();
+              const seasonNo = String(match[2] || '').padStart(2, '0');
+              const episodeNo = String(match[3] || '').padStart(2, '0');
+              displayTitle = showName || rawTitle;
+              displayMeta = `Season ${seasonNo} · Episode ${episodeNo}`;
+            }
+          }
           hoverCard.innerHTML = `
-            <img class="calendar-event-hover-poster" src="${poster || fallbackPoster}" alt="${title}" />
+            <img class="calendar-event-hover-poster" src="${poster || fallbackPoster}" alt="${displayTitle}" />
             <div class="calendar-event-hover-text">
-              <div class="calendar-event-hover-title">${title}</div>
+              <div class="calendar-event-hover-title">${displayTitle}</div>
+              ${displayMeta ? `<div class="calendar-event-hover-meta">${displayMeta}</div>` : ''}
               <div class="calendar-event-hover-date">${dateText}</div>
             </div>
           `;
@@ -1106,7 +1612,7 @@ async function onboardingSaveTmdbKey() {
     });
     statusEl.textContent = 'Saved';
     await loadProfileData(true);
-    history.pushState({}, '', '/');
+    history.pushState({}, '', '/profile');
     await handleLocation();
   } catch (error) {
     statusEl.textContent = error.message;
@@ -1145,7 +1651,7 @@ async function pollForAuth(pinId, statusEl) {
       statusEl.classList.add('success');
       state.session = await api('/api/session');
       await loadProfileData(true);
-      history.pushState({}, '', '/');
+      history.pushState({}, '', '/profile');
       await handleLocation();
       return;
     }
@@ -1213,7 +1719,7 @@ async function renderProfile(enableBackgroundRefresh = true) {
           </div>
         </div>
         <div class="prefix-section">
-          <div class="meta no-margin prefix-section-label settings-label-strong">Actors:</div>
+          <div class="meta no-margin prefix-section-label settings-label-strong">Cast:</div>
           <div id="actor-prefix-example" class="meta no-margin prefix-example ${actorExampleText ? '' : 'hidden'}">${actorExampleText}</div>
           <div class="row prefix-section-controls">
             <input id="actor-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.actor_start}" />
@@ -1227,7 +1733,7 @@ async function renderProfile(enableBackgroundRefresh = true) {
         </div>
 
         <div class="prefix-section">
-          <div class="meta no-margin prefix-section-label settings-label-strong">Film:</div>
+          <div class="meta no-margin prefix-section-label settings-label-strong">Movies:</div>
           <div id="movie-prefix-example" class="meta no-margin prefix-example ${movieExampleText ? '' : 'hidden'}">${movieExampleText}</div>
           <div class="row prefix-section-controls">
             <input id="movie-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.movie_start}" />
@@ -1241,7 +1747,7 @@ async function renderProfile(enableBackgroundRefresh = true) {
         </div>
 
         <div class="prefix-section">
-          <div class="meta no-margin prefix-section-label settings-label-strong">Show:</div>
+          <div class="meta no-margin prefix-section-label settings-label-strong">Shows:</div>
           <div id="show-prefix-example" class="meta no-margin prefix-example ${showExampleText ? '' : 'hidden'}">${showExampleText}</div>
           <div class="row prefix-section-controls">
             <input id="show-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.show_start}" />
@@ -1255,7 +1761,7 @@ async function renderProfile(enableBackgroundRefresh = true) {
         </div>
 
         <div class="prefix-section">
-          <div class="meta no-margin prefix-section-label settings-label-strong">Season:</div>
+          <div class="meta no-margin prefix-section-label settings-label-strong">Seasons:</div>
           <div id="season-prefix-example" class="meta no-margin prefix-example ${seasonExampleText ? '' : 'hidden'}">${seasonExampleText}</div>
           <div class="row prefix-section-controls">
             <input id="season-prefix-start" type="text" class="secondary-btn prefix-input" placeholder="Start prefix" value="${downloadPrefix.season_start}" />
@@ -1288,7 +1794,7 @@ async function renderProfile(enableBackgroundRefresh = true) {
           <h3>Plex Library Scan</h3>
           <div class="row library-sync-actions">
             <button id="scan-reset-btn" class="secondary-btn">Reset</button>
-            <button id="scan-btn" class="primary-btn btn-with-icon">${scanIconTag()}<span>Scan Actors</span></button>
+            <button id="scan-btn" class="primary-btn btn-with-icon">${scanIconTag()}<span>Scan Cast</span></button>
             <button id="scan-shows-btn" class="primary-btn btn-with-icon">${scanIconTag()}<span>Scan Shows</span></button>
           </div>
         </div>
@@ -1362,6 +1868,7 @@ async function selectServer(clientIdentifier) {
     status.textContent = 'Saved';
     state.profileLoaded = false;
     state.actorsLoaded = false;
+    state.actorsLoadedRole = '';
     state.showsLoaded = false;
     await renderProfile();
   } catch (error) {
@@ -1397,6 +1904,7 @@ async function resetScansOnly() {
     state.actors = [];
     state.shows = [];
     state.actorsLoaded = false;
+    state.actorsLoadedRole = '';
     state.showsLoaded = false;
     state.showSeasonsCache = {};
     state.showEpisodesCache = {};
@@ -1435,7 +1943,7 @@ function renderScanLogs(actorLogs, showLogs = []) {
       if (entry._kind === 'shows') {
         return `<li class="scan-log-item">${dateText} - ${entry.shows} shows, ${entry.episodes} episodes</li>`;
       }
-      return `<li class="scan-log-item">${dateText} - ${entry.actors} actors, ${entry.movies} movies</li>`;
+      return `<li class="scan-log-item">${dateText} - ${entry.actors} cast, ${entry.movies} movies</li>`;
     })
     .join('');
 }
@@ -1482,6 +1990,7 @@ async function saveProfileSettings() {
     clearPrimaryDataCaches();
     state.profileLoaded = false;
     state.actorsLoaded = false;
+    state.actorsLoadedRole = '';
     state.showsLoaded = false;
     await renderProfile();
     const refreshedStatus = document.getElementById('profile-save-status');
@@ -1565,7 +2074,7 @@ function showScanSuccessModal(message = 'Scan complete', showConfirm = false) {
   const msg = document.getElementById('scan-modal-msg');
   const okBtn = document.getElementById('scan-modal-ok');
   if (!iconWrap) return;
-  iconWrap.innerHTML = '<div class="scan-check">✓</div>';
+  iconWrap.innerHTML = '<div class="scan-check">&#10003;</div>';
   if (msg) msg.textContent = message;
   if (okBtn) {
     okBtn.classList.toggle('hidden', !showConfirm);
@@ -1578,7 +2087,7 @@ function closeScanModal() {
   if (modal) modal.remove();
 }
 
-function chooseShowMissingScanMode(scopedCount, allCount) {
+function chooseShowMissingScanMode(scopedCount, allCount, unscannedCount = 0) {
   return new Promise((resolve) => {
     const modal = document.createElement('div');
     modal.className = 'scan-modal';
@@ -1588,7 +2097,8 @@ function chooseShowMissingScanMode(scopedCount, allCount) {
         <div class="scan-modal-msg">Choose scan scope</div>
         <div class="row" style="justify-content:center; gap: 10px; margin-top: 14px; flex-direction: column; align-items: center;">
           <button id="scan-choice-scoped" class="primary-btn" type="button" style="min-width: 170px;">Scan (${scopedCount})</button>
-          <button id="scan-choice-all" class="secondary-btn" type="button" style="min-width: 170px;">Scan All (${allCount})</button>
+          ${unscannedCount > 0 ? `<button id="scan-choice-unscanned" class="secondary-btn" type="button" style="min-width: 170px;">Unscanned (${unscannedCount})</button>` : ''}
+          <button id="scan-choice-all" class="secondary-btn" type="button" style="min-width: 170px;">All (${allCount})</button>
           <button id="scan-choice-cancel" class="toggle-btn" type="button" style="margin-top: 14px; min-width: 170px;">Cancel</button>
         </div>
       </div>
@@ -1602,6 +2112,7 @@ function chooseShowMissingScanMode(scopedCount, allCount) {
 
     document.getElementById('scan-choice-scoped')?.addEventListener('click', () => close('scoped'));
     document.getElementById('scan-choice-all')?.addEventListener('click', () => close('all'));
+    document.getElementById('scan-choice-unscanned')?.addEventListener('click', () => close('unscanned'));
     document.getElementById('scan-choice-cancel')?.addEventListener('click', () => close(null));
   });
 }
@@ -1678,7 +2189,7 @@ function showCreateCollectionSuccessModal(updatedCount, detail = '') {
   const msg = document.getElementById('create-collection-modal-msg');
   const okBtn = document.getElementById('create-collection-modal-ok');
   if (!iconWrap) return;
-  iconWrap.innerHTML = '<div class="scan-check">✓</div>';
+  iconWrap.innerHTML = '<div class="scan-check">&#10003;</div>';
   if (msg) {
     if (updatedCount > 0) {
       msg.textContent = `Collection updated (${updatedCount})`;
@@ -1708,6 +2219,7 @@ async function runScan() {
     clearPrimaryDataCaches();
     invalidateImageCache();
     state.actorsLoaded = false;
+    state.actorsLoadedRole = '';
     const showLogs = state.profile?.show_scan_logs || [];
     renderScanLogs(result.scan_logs || [], showLogs);
     showScanSuccessModal('Scan complete', true);
@@ -1751,6 +2263,7 @@ async function resetApp() {
   state.profile = null;
   state.currentView = 'profile';
   state.actorsLoaded = false;
+  state.actorsLoadedRole = '';
   state.showsLoaded = false;
   state.showSeasonsCache = {};
   state.showEpisodesCache = {};
@@ -1790,37 +2303,42 @@ async function resetApp() {
     state.showsImageObserver.disconnect();
     state.showsImageObserver = null;
   }
-  history.pushState({}, '', '/');
+  history.pushState({}, '', '/profile');
   renderOnboarding();
 }
 
-async function loadActorsData(forceRefresh = false) {
-  if (!forceRefresh && state.actorsLoaded && Array.isArray(state.actors)) {
+async function loadActorsData(forceRefresh = false, role = 'actor') {
+  const castRole = CAST_ROLES.includes(role) ? role : 'actor';
+  const cacheKey = getActorsCacheKey(castRole);
+  if (!forceRefresh && state.actorsLoaded && state.actorsLoadedRole === castRole && Array.isArray(state.actors)) {
     return { items: state.actors };
   }
   if (!forceRefresh && !state.actorsLoaded) {
-    const cached = readPersistentCache(CACHE_KEYS.actors, CACHE_TTL_MS.actors);
+    const cached = readPersistentCache(cacheKey, CACHE_TTL_MS.actors);
     if (cached && Array.isArray(cached.items)) {
       state.actors = cached.items;
       state.actorsLoaded = true;
+      state.actorsLoadedRole = castRole;
       return cached;
     }
   }
-  const data = await api('/api/actors');
+  const data = await api(`/api/actors?role=${encodeURIComponent(castRole)}`);
   state.actors = Array.isArray(data.items) ? data.items : [];
   state.actorsLoaded = true;
-  writePersistentCache(CACHE_KEYS.actors, { items: state.actors });
+  state.actorsLoadedRole = castRole;
+  writePersistentCache(cacheKey, { items: state.actors });
   return { ...data, items: state.actors };
 }
 
 async function refreshActorsInBackground() {
+  if (!CAST_ROLES.includes(state.castRole)) return;
   if (state.actorsRefreshInFlight) return;
   if (Date.now() - state.actorsLastRefreshAt < 60000) return;
   state.actorsRefreshInFlight = true;
   try {
-    await loadActorsData(true);
+    await loadActorsData(true, state.castRole);
     state.actorsLastRefreshAt = Date.now();
-    if (window.location.pathname === '/actors') {
+    if (window.location.pathname === '/cast') {
       renderActors(false);
     }
   } catch {
@@ -1866,10 +2384,54 @@ async function refreshShowsInBackground() {
   }
 }
 
+async function renderCastRoleChooser() {
+  const roleMeta = await api('/api/cast/roles');
+  const totals = roleMeta?.items || {};
+  app.innerHTML = `
+    <div class="topbar">
+      <div class="topbar-title">
+        <h2>Cast</h2>
+        <div class="meta">Choose a role</div>
+      </div>
+    </div>
+    <section class="grid cast-role-grid" id="cast-role-grid"></section>
+  `;
+  const grid = document.getElementById('cast-role-grid');
+  for (const role of CAST_ROLES) {
+    const label = CAST_ROLE_LABELS[role];
+    const total = Number(totals[role] || 0);
+    const card = document.createElement('article');
+    card.className = 'actor-card';
+    card.innerHTML = `
+      <div class="caption role-choice-caption">
+        <div class="role-choice-icon"><img src="${CAST_ROLE_ICONS[role] || ''}" alt="" loading="lazy" /></div>
+        <div class="name">${label}</div>
+        <div class="count">Total: ${total}</div>
+      </div>
+    `;
+    card.addEventListener('click', () => {
+      state.castRole = role;
+      localStorage.setItem(CAST_ROLE_STORAGE_KEY, role);
+      history.pushState({}, '', `/cast?role=${encodeURIComponent(role)}`);
+      handleLocation();
+    });
+    grid.appendChild(card);
+  }
+}
+
 async function renderActors(enableBackgroundRefresh = true) {
+  const activeRole = getCastRoleFromQuery();
+  if (!CAST_ROLES.includes(activeRole)) {
+    state.castRole = '';
+    await renderCastRoleChooser();
+    return;
+  }
+  state.castRole = activeRole;
+  const roleLabel = CAST_ROLE_LABELS[activeRole] || 'Actors';
+  const roleSingular = activeRole === 'director' ? 'director' : (activeRole === 'writer' ? 'writer' : 'actor');
   let data = { items: state.actors, last_scan_at: null };
-  if (!state.actorsLoaded) {
-    data = await loadActorsData(false);
+  if (!state.actorsLoaded || state.actorsLoadedRole !== activeRole) {
+    data = await loadActorsData(false, activeRole);
   } else {
     data = { items: state.actors, last_scan_at: state.profile?.scan_logs?.[0]?.scanned_at || null };
   }
@@ -1877,9 +2439,9 @@ async function renderActors(enableBackgroundRefresh = true) {
   if (!state.actors.length) {
     app.innerHTML = `
       <div class="topbar">
-        <h2>Actors</h2>
+        <h2>${roleLabel}</h2>
       </div>
-      <div class="empty actors-empty">No actors yet. Go to Profile and run a scan first.</div>
+      <div class="empty actors-empty">No ${roleLabel.toLowerCase()} yet. Go to Profile and run a scan first.</div>
     `;
     return;
   }
@@ -1891,27 +2453,32 @@ async function renderActors(enableBackgroundRefresh = true) {
 
   app.innerHTML = `
     <div class="topbar">
-      <div class="topbar-title">
-        <h2>Actors</h2>
-        <div class="meta">${state.actors.length} actors</div>
+      <div class="topbar-left">
+        <button id="cast-role-back" class="back-icon-btn" title="Back to Cast Roles" aria-label="Back to Cast Roles">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg>
+        </button>
+        <div class="topbar-title">
+          <h2>${roleLabel}</h2>
+          <div class="meta">Total: ${state.actors.length}</div>
+        </div>
       </div>
       <div class="row">
         <div id="actors-search-control" class="search-control ${state.actorsSearchOpen ? 'open' : ''}">
           <button id="actors-search-toggle" class="search-toggle-btn has-pill-tooltip" title="Search" aria-label="Search" data-tooltip="Search">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 1-4.24 10.24A6 6 0 0 1 10 4m0-2a8 8 0 1 0 5.29 14l4.85 4.85 1.41-1.41-4.85-4.85A8 8 0 0 0 10 2Z"/></svg>
           </button>
-          <input id="actors-search-input" class="search-input" type="text" placeholder="Search actors" value="${state.actorsSearchQuery}" />
+          <input id="actors-search-input" class="search-input" type="text" placeholder="Search ${roleLabel.toLowerCase()}" value="${state.actorsSearchQuery}" />
           <button id="actors-search-clear" class="search-clear-btn ${state.actorsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
         </div>
-        <select id="actors-sort-by" class="secondary-btn" aria-label="Sort actors by">
+        <select id="actors-sort-by" class="secondary-btn" aria-label="Sort cast by">
           <option value="movies" ${state.actorsSortBy === 'movies' ? 'selected' : ''}>Movies</option>
           <option value="missing" ${state.actorsSortBy === 'missing' ? 'selected' : ''}>Missing</option>
           <option value="name" ${state.actorsSortBy === 'name' ? 'selected' : ''}>Name</option>
           <option value="new" ${state.actorsSortBy === 'new' ? 'selected' : ''}>New</option>
           <option value="upcoming" ${state.actorsSortBy === 'upcoming' ? 'selected' : ''}>Upcoming</option>
         </select>
-        <button id="actors-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.actorsSortDir === 'asc' ? '↑' : '↓'}</button>
-        ${hasInPlexFlagData || state.actorsInPlexOnly ? `<button id="actors-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.actorsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">✓</button>` : ''}
+        <button id="actors-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.actorsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
+        ${hasInPlexFlagData || state.actorsInPlexOnly ? `<button id="actors-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.actorsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>` : ''}
         ${hasMissingFlagData || state.actorsMissingOnly ? `<button id="actors-missing-filter" class="toggle-btn has-pill-tooltip ${state.actorsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>` : ''}
         ${hasUpcomingData || state.actorsUpcomingOnly ? `<button id="actors-upcoming-filter" class="toggle-btn has-pill-tooltip ${state.actorsUpcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>` : ''}
         ${hasNewData || state.actorsNewOnly ? `<button id="actors-new-filter" class="toggle-btn has-pill-tooltip ${state.actorsNewOnly ? 'active' : ''}" data-tooltip="New">NEW</button>` : ''}
@@ -1939,6 +2506,13 @@ async function renderActors(enableBackgroundRefresh = true) {
     <div class="load-more-wrap" id="actors-load-more-wrap"></div>
     <button id="actors-scan-missing-btn" class="collection-pill-btn btn-with-icon">${scanIconTag()}<span>Scan Movies</span></button>
   `;
+
+  document.getElementById('cast-role-back')?.addEventListener('click', () => {
+    state.castRole = '';
+    localStorage.removeItem(CAST_ROLE_STORAGE_KEY);
+    history.pushState({}, '', '/cast');
+    handleLocation();
+  });
 
   document.getElementById('actors-sort-by').addEventListener('change', (event) => {
     state.actorsSortBy = event.target.value;
@@ -2044,7 +2618,7 @@ async function renderActors(enableBackgroundRefresh = true) {
     sortedActors.reverse();
   }
 
-  const renderActorsGrid = () => {
+  const renderActorsGrid = (incremental = false) => {
     const query = state.actorsSearchQuery.trim().toLowerCase();
     const isSearching = query.length > 0;
     const filteredByInitial = state.actorsInitialFilter === 'All'
@@ -2078,11 +2652,11 @@ async function renderActors(enableBackgroundRefresh = true) {
       }
     }
 
-    if (state.actorsImageObserver) {
+    if (!incremental && state.actorsImageObserver) {
       state.actorsImageObserver.disconnect();
       state.actorsImageObserver = null;
     }
-    if ('IntersectionObserver' in window) {
+    if (!state.actorsImageObserver && 'IntersectionObserver' in window) {
       state.actorsImageObserver = new IntersectionObserver((entries, observer) => {
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
@@ -2096,12 +2670,16 @@ async function renderActors(enableBackgroundRefresh = true) {
       }, { rootMargin: '180px 0px' });
     }
 
-    grid.innerHTML = '';
-    for (const actor of renderItems) {
+    if (!incremental) {
+      grid.innerHTML = '';
+    }
+    const alreadyRendered = incremental ? grid.querySelectorAll('.actor-card').length : 0;
+    const itemsToRender = incremental ? renderItems.slice(alreadyRendered) : renderItems;
+    for (const actor of itemsToRender) {
       const downloadUrl = buildDownloadLink('actor', actor.name);
       const actorDownloadBadge = downloadUrl
-        ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
-        : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
+        ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">&#8595;</span></a>`
+        : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">&#8595;</span></span>`;
       const actorImage = withImageCacheKey(actor.image_url) || ACTOR_PLACEHOLDER;
       const newCount = Number.isFinite(Number(actor.missing_new_count)) ? Number(actor.missing_new_count) : 0;
       const missingCount = Number.isFinite(Number(actor.missing_movie_count)) ? Number(actor.missing_movie_count) : 0;
@@ -2118,7 +2696,7 @@ async function renderActors(enableBackgroundRefresh = true) {
       card.className = `actor-card${actorStatus === 'new' ? ' has-new' : (actorStatus === 'missing' ? ' has-missing' : (actorStatus === 'upcoming' ? ' has-upcoming' : ''))}`;
       card.innerHTML = `
         <div class="poster-wrap">
-          <button class="show-scan-pill" type="button" data-actor-id="${actor.actor_id}" title="Scan movies for this actor" aria-label="Scan movies for this actor">
+          <button class="show-scan-pill" type="button" data-actor-id="${actor.actor_id}" title="Scan movies for this ${roleSingular}" aria-label="Scan movies for this ${roleSingular}">
             <span class="show-scan-pill-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
                 <path d="${SCAN_ICON_PATH}"></path>
@@ -2134,7 +2712,7 @@ async function renderActors(enableBackgroundRefresh = true) {
               ${hasMissing ? '<span class="missing-badge" title="Missing movies" aria-label="Missing movies">!</span>' : ''}
             </div>
           ` : ''}
-          ${isInPlex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
+          ${isInPlex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
           ${isInPlex
             ? '<span class="badge-link badge-overlay">Plex ' + plexLogoTag() + '</span>'
             : actorDownloadBadge}
@@ -2163,7 +2741,7 @@ async function renderActors(enableBackgroundRefresh = true) {
         event.stopPropagation();
         if (scanPillBtn.disabled) return;
         scanPillBtn.disabled = true;
-        showScanModal('Scanned 0/1 actors');
+        showScanModal('Scanned 0/1 cast');
         try {
           const result = await api('/api/actors/missing-scan', {
             method: 'POST',
@@ -2192,7 +2770,7 @@ async function renderActors(enableBackgroundRefresh = true) {
       loadMoreWrap.innerHTML = `<button id="actors-load-more" class="secondary-btn">Load more (${remaining})</button>`;
       document.getElementById('actors-load-more').addEventListener('click', () => {
         state.actorsVisibleCount += ACTORS_BATCH_SIZE;
-        renderActorsGrid();
+        renderActorsGrid(true);
       });
     } else {
       loadMoreWrap.innerHTML = '';
@@ -2273,20 +2851,26 @@ async function renderActors(enableBackgroundRefresh = true) {
       const scoped = getScopedActors();
       const scopedIds = scoped.map((item) => String(item.actor_id)).filter(Boolean);
       const allIds = state.actors.map((item) => String(item.actor_id)).filter(Boolean);
+      const unscannedIds = scoped
+        .filter((item) => !item?.missing_scan_at)
+        .map((item) => String(item.actor_id))
+        .filter(Boolean);
       if (!allIds.length) {
-        window.alert('No actors available in current filter.');
+        window.alert('No cast available in current filter.');
         return;
       }
-      const choice = await chooseShowMissingScanMode(scopedIds.length, allIds.length);
+      const choice = await chooseShowMissingScanMode(scopedIds.length, allIds.length, unscannedIds.length);
       if (!choice) return;
-      const actorIds = choice === 'all' ? allIds : scopedIds;
+      const actorIds = choice === 'all'
+        ? allIds
+        : (choice === 'unscanned' ? unscannedIds : scopedIds);
       if (!actorIds.length) {
-        window.alert('No actors available in current filter.');
+        window.alert(choice === 'unscanned' ? 'No unscanned cast items found.' : 'No cast available in current filter.');
         return;
       }
       scanMissingBtn.disabled = true;
       const total = actorIds.length;
-      showScanModal(`Scanned 0/${total} actors`);
+      showScanModal(`Scanned 0/${total} cast`);
       try {
         await runScanWorkers({
           ids: actorIds,
@@ -2355,7 +2939,7 @@ async function renderShows(enableBackgroundRefresh = true) {
     <div class="topbar">
       <div class="topbar-title">
         <h2>Shows</h2>
-        <div class="meta">${state.shows.length} shows</div>
+        <div class="meta">Total: ${state.shows.length}</div>
       </div>
       <div class="row">
         <div id="shows-search-control" class="search-control ${state.showsSearchOpen ? 'open' : ''}">
@@ -2373,7 +2957,7 @@ async function renderShows(enableBackgroundRefresh = true) {
           <option value="new" ${state.showsSortBy === 'new' ? 'selected' : ''}>New</option>
           <option value="upcoming" ${state.showsSortBy === 'upcoming' ? 'selected' : ''}>Upcoming</option>
         </select>
-        <button id="shows-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.showsSortDir === 'asc' ? '↑' : '↓'}</button>
+        <button id="shows-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.showsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
         ${hasInPlexFlagData || state.showsInPlexOnly ? `<button id="shows-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.showsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>` : ''}
         ${hasMissingFlagData || state.showsMissingOnly ? `<button id="shows-missing-episodes-filter" class="toggle-btn has-pill-tooltip ${state.showsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>` : ''}
         ${hasUpcomingData || state.showsUpcomingOnly ? `<button id="shows-upcoming-filter" class="toggle-btn has-pill-tooltip ${state.showsUpcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>` : ''}
@@ -2537,7 +3121,7 @@ async function renderShows(enableBackgroundRefresh = true) {
     return scoped;
   };
 
-  const renderShowsGrid = () => {
+  const renderShowsGrid = (incremental = false) => {
     const query = state.showsSearchQuery.trim().toLowerCase();
     const isSearching = query.length > 0;
     const visible = getScopedShows(true);
@@ -2549,11 +3133,17 @@ async function renderShows(enableBackgroundRefresh = true) {
       if (!isSearching && button.dataset.filter === state.showsInitialFilter) button.classList.add('active');
     }
 
-    resetShowImageQueue();
+    if (!incremental) {
+      resetShowImageQueue();
+    }
     const queueToken = state.showsImageQueueToken;
 
-    grid.innerHTML = '';
-    for (const show of renderItems) {
+    if (!incremental) {
+      grid.innerHTML = '';
+    }
+    const alreadyRendered = incremental ? grid.querySelectorAll('.actor-card').length : 0;
+    const itemsToRender = incremental ? renderItems.slice(alreadyRendered) : renderItems;
+    for (const show of itemsToRender) {
       const downloadUrl = buildDownloadLink('show', show.title);
       const newCount = Number.isFinite(Number(show.missing_new_count)) ? Number(show.missing_new_count) : 0;
       const oldCount = Number.isFinite(Number(show.missing_old_count)) ? Number(show.missing_old_count) : 0;
@@ -2573,8 +3163,8 @@ async function renderShows(enableBackgroundRefresh = true) {
       const showStatusBadge = hasNoMissing && show.plex_web_url
         ? `<a class="badge-link badge-overlay" href="${show.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
         : downloadUrl
-          ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
-          : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
+          ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">&#8595;</span></a>`
+          : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">&#8595;</span></span>`;
       const showImage = withImageCacheKey(show.image_url) || SHOW_PLACEHOLDER;
       const card = document.createElement('article');
       card.className = `actor-card${isNew ? ' has-new' : (hasMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}`;
@@ -2596,7 +3186,7 @@ async function renderShows(enableBackgroundRefresh = true) {
               ${hasMissing ? '<span class="missing-badge" title="Missing episodes" aria-label="Missing episodes">!</span>' : ''}
             </div>
           ` : ''}
-          ${hasNoMissing ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
+          ${hasNoMissing ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
           ${showStatusBadge}
         </div>
         <div class="caption">
@@ -2646,7 +3236,7 @@ async function renderShows(enableBackgroundRefresh = true) {
       loadMoreWrap.innerHTML = `<button id="shows-load-more" class="secondary-btn">Load more (${remaining})</button>`;
       document.getElementById('shows-load-more').addEventListener('click', () => {
         state.showsVisibleCount += ACTORS_BATCH_SIZE;
-        renderShowsGrid();
+        renderShowsGrid(true);
       });
     } else {
       loadMoreWrap.innerHTML = '';
@@ -2705,15 +3295,21 @@ async function renderShows(enableBackgroundRefresh = true) {
       const scoped = getScopedShows(true);
       const scopedIds = scoped.map((item) => String(item.show_id)).filter(Boolean);
       const allIds = state.shows.map((item) => String(item.show_id)).filter(Boolean);
+      const unscannedIds = scoped
+        .filter((item) => !item?.missing_scan_at)
+        .map((item) => String(item.show_id))
+        .filter(Boolean);
       if (!allIds.length) {
         window.alert('No shows available in current filter.');
         return;
       }
-      const choice = await chooseShowMissingScanMode(scopedIds.length, allIds.length);
+      const choice = await chooseShowMissingScanMode(scopedIds.length, allIds.length, unscannedIds.length);
       if (!choice) return;
-      const showIds = choice === 'all' ? allIds : scopedIds;
+      const showIds = choice === 'all'
+        ? allIds
+        : (choice === 'unscanned' ? unscannedIds : scopedIds);
       if (!showIds.length) {
-        window.alert('No shows available in current filter.');
+        window.alert(choice === 'unscanned' ? 'No unscanned shows found.' : 'No shows available in current filter.');
         return;
       }
       scanMissingBtn.disabled = true;
@@ -2823,22 +3419,36 @@ function buildFilteredEpisodesData(baseData, missingOnly, inPlexOnly, newOnly, u
 function getCachedShowSeasonsData(showId, missingOnly, inPlexOnly, newOnly, upcomingOnly) {
   const key = showSeasonsCacheKey(showId, missingOnly, inPlexOnly, newOnly, upcomingOnly);
   if (state.showSeasonsCache[key]) return state.showSeasonsCache[key];
+  const persistedExact = readShowSeasonsPersistentCache(key);
+  if (persistedExact) {
+    state.showSeasonsCache[key] = persistedExact;
+    return persistedExact;
+  }
   const baseKey = showSeasonsCacheKey(showId, false, false, false, false);
-  const base = state.showSeasonsCache[baseKey];
+  const base = state.showSeasonsCache[baseKey] || readShowSeasonsPersistentCache(baseKey);
   if (!base) return null;
+  state.showSeasonsCache[baseKey] = base;
   const derived = buildFilteredSeasonsData(base, missingOnly, inPlexOnly, newOnly, upcomingOnly);
   state.showSeasonsCache[key] = derived;
+  writeShowSeasonsPersistentCache(key, derived);
   return derived;
 }
 
 function getCachedShowEpisodesData(showId, seasonNumber, missingOnly, inPlexOnly, newOnly, upcomingOnly) {
   const key = showEpisodesCacheKey(showId, seasonNumber, missingOnly, inPlexOnly, newOnly, upcomingOnly);
   if (state.showEpisodesCache[key]) return state.showEpisodesCache[key];
+  const persistedExact = readShowEpisodesPersistentCache(key);
+  if (persistedExact) {
+    state.showEpisodesCache[key] = persistedExact;
+    return persistedExact;
+  }
   const baseKey = showEpisodesCacheKey(showId, seasonNumber, false, false, false, false);
-  const base = state.showEpisodesCache[baseKey];
+  const base = state.showEpisodesCache[baseKey] || readShowEpisodesPersistentCache(baseKey);
   if (!base) return null;
+  state.showEpisodesCache[baseKey] = base;
   const derived = buildFilteredEpisodesData(base, missingOnly, inPlexOnly, newOnly, upcomingOnly);
   state.showEpisodesCache[key] = derived;
+  writeShowEpisodesPersistentCache(key, derived);
   return derived;
 }
 
@@ -2848,11 +3458,13 @@ async function getShowSeasonsData(showId, missingOnly, inPlexOnly, newOnly, upco
   const baseKey = showSeasonsCacheKey(showId, false, false, false, false);
   const baseData = await api(`/api/shows/${showId}/seasons?missing_only=false&in_plex_only=false&new_only=false&upcoming_only=false`);
   state.showSeasonsCache[baseKey] = baseData;
+  writeShowSeasonsPersistentCache(baseKey, baseData);
   const key = showSeasonsCacheKey(showId, missingOnly, inPlexOnly, newOnly, upcomingOnly);
   const data = (missingOnly || inPlexOnly || newOnly || upcomingOnly)
     ? buildFilteredSeasonsData(baseData, missingOnly, inPlexOnly, newOnly, upcomingOnly)
     : baseData;
   state.showSeasonsCache[key] = data;
+  writeShowSeasonsPersistentCache(key, data);
   return data;
 }
 
@@ -2869,11 +3481,13 @@ async function getShowEpisodesDataWithOptions(showId, seasonNumber, missingOnly,
     fetchOptions,
   );
   state.showEpisodesCache[baseKey] = baseData;
+  writeShowEpisodesPersistentCache(baseKey, baseData);
   const key = showEpisodesCacheKey(showId, seasonNumber, missingOnly, inPlexOnly, newOnly, upcomingOnly);
   const data = (missingOnly || inPlexOnly || newOnly || upcomingOnly)
     ? buildFilteredEpisodesData(baseData, missingOnly, inPlexOnly, newOnly, upcomingOnly)
     : baseData;
   state.showEpisodesCache[key] = data;
+  writeShowEpisodesPersistentCache(key, data);
   return data;
 }
 
@@ -2949,8 +3563,8 @@ async function renderShowSeasons(showId) {
         </div>
       </div>
       <div class="row">
-        <button id="seasons-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${seasonsSortDir === 'asc' ? '↑' : '↓'}</button>
-        <button id="shows-in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">✓</button>
+        <button id="seasons-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${seasonsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
+        <button id="shows-in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="shows-missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
         <button id="shows-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="shows-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
@@ -3030,23 +3644,34 @@ async function renderShowSeasons(showId) {
 
   for (const season of seasons) {
     const seasonDownloadUrl = buildDownloadLink('season', buildSeasonKeyword(data.show.title, season.season_number));
-    const seasonDownloadBadge = seasonDownloadUrl
-      ? `<a class="badge-link badge-overlay badge-download" href="${seasonDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
-      : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>';
     const seasonNewCount = Number.isFinite(Number(season.missing_new_count)) ? Number(season.missing_new_count) : 0;
     const seasonOldCount = Number.isFinite(Number(season.missing_old_count)) ? Number(season.missing_old_count) : 0;
     const seasonUpcomingCount = Number.isFinite(Number(season.missing_upcoming_count)) ? Number(season.missing_upcoming_count) : 0;
     const hasNew = seasonNewCount > 0;
     const hasUpcoming = seasonUpcomingCount > 0;
     const hasMissing = (seasonOldCount + seasonNewCount) > 0 || (!hasNew && !hasUpcoming && season.status === 'missing');
+    const seasonEpisodesInPlex = Number.isFinite(Number(season.episodes_in_plex)) ? Number(season.episodes_in_plex) : 0;
     const isNew = hasNew;
     const isUpcoming = !hasNew && hasUpcoming;
     const isMissing = !hasNew && !hasUpcoming && hasMissing;
     const seasonReleasedText = formatReleasedDate(season.air_date, null);
+    const seasonYearFromRelease = Number.parseInt(String(seasonReleasedText || ''), 10);
+    const seasonYear = Number.isFinite(seasonYearFromRelease)
+      ? seasonYearFromRelease
+      : (Number.isFinite(Number(season.year)) ? Number(season.year) : null);
+    const hideInPlexVisuals = seasonYear === 0 && seasonEpisodesInPlex === 0;
+    const showSeasonInPlex = Boolean(season.in_plex) && !hideInPlexVisuals;
     const seasonNextUpcoming = season.next_upcoming_air_date ? formatDateDdMmYyyy(season.next_upcoming_air_date) : null;
     const seasonMissingInclNew = Math.max(0, seasonOldCount + seasonNewCount);
+    const seasonDownloadBadge = hideInPlexVisuals
+      ? ''
+      : (
+        seasonDownloadUrl
+          ? `<a class="badge-link badge-overlay badge-download" href="${seasonDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">&#8595;</span></a>`
+          : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">&#8595;</span></span>'
+      );
     const card = document.createElement('article');
-    card.className = `movie-card${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}`;
+    card.className = `movie-card${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}${hideInPlexVisuals ? ' no-date' : ''}`;
     card.innerHTML = `
       <div class="poster-wrap">
         <img class="poster" src="${withImageCacheKey(season.poster_url) || SHOW_PLACEHOLDER}" alt="${season.name}" loading="lazy" />
@@ -3057,9 +3682,9 @@ async function renderShowSeasons(showId) {
             ${hasMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
           </div>
         ` : ''}
-        ${season.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
+        ${showSeasonInPlex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
         ${
-          season.in_plex
+          showSeasonInPlex
             ? (
               season.plex_web_url
                 ? `<a class="badge-link badge-overlay" href="${season.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
@@ -3131,8 +3756,8 @@ async function renderShowEpisodes(showId, seasonNumber) {
         </div>
       </div>
       <div class="row">
-        <button id="episodes-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${episodesSortDir === 'asc' ? '↑' : '↓'}</button>
-        <button id="episodes-in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">✓</button>
+        <button id="episodes-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${episodesSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
+        <button id="episodes-in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="episodes-missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
         <button id="episodes-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="episodes-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
@@ -3209,9 +3834,14 @@ async function renderShowEpisodes(showId, seasonNumber) {
       'episode',
       buildEpisodeKeyword(data.show.title, seasonNumber, episode.episode_number),
     );
-    const episodeDownloadBadge = episodeDownloadUrl
-      ? `<a class="badge-link badge-overlay badge-download" href="${episodeDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
-      : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>';
+    const allowEpisodeDownload = Boolean(episode.air_date) && !isFutureDate(episode.air_date);
+    const episodeDownloadBadge = allowEpisodeDownload
+      ? (
+        episodeDownloadUrl
+          ? `<a class="badge-link badge-overlay badge-download" href="${episodeDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">&#8595;</span></a>`
+          : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">&#8595;</span></span>'
+      )
+      : '';
     const isUpcoming = episode.status === 'upcoming';
     const isNew = episode.status === 'new';
     const isIgnored = episode.status === 'ignored' || Boolean(episode.ignored);
@@ -3242,7 +3872,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
         ${isToggleableIgnore ? `<button class="ignore-toggle-btn ignore-toggle-overlay" type="button" data-episode-number="${episode.episode_number}" data-ignored="${isIgnored ? '1' : '0'}">${isIgnored ? 'Unignore' : 'Ignore'}</button>` : ''}
         <img class="poster" src="${withImageCacheKey(episode.poster_url) || SHOW_PLACEHOLDER}" alt="${episode.title}" loading="lazy" />
         ${renderEpisodeStatusBadges(episode.status)}
-        ${episode.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
+        ${episode.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
         ${
           episode.in_plex
             ? `<a class="badge-link badge-overlay" href="${episode.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
@@ -3326,6 +3956,12 @@ async function renderShowEpisodes(showId, seasonNumber) {
 
 async function renderActorDetail(actorId) {
   const search = new URLSearchParams(window.location.search);
+  const castRole = (() => {
+    const role = (search.get('role') || state.castRole || '').trim().toLowerCase();
+    return CAST_ROLES.includes(role) ? role : 'actor';
+  })();
+  state.castRole = castRole;
+  localStorage.setItem(CAST_ROLE_STORAGE_KEY, castRole);
   const missingOnly = search.get('missingOnly') === '1';
   const inPlexOnly = search.get('inPlexOnly') === '1';
   const newOnly = search.get('newOnly') === '1';
@@ -3336,7 +3972,7 @@ async function renderActorDetail(actorId) {
   const sortBy = rawSortBy === 'year' ? 'date' : rawSortBy;
   const sortDir = search.get('sortDir') || defaultMoviesSortDir;
 
-  const data = await api(`/api/actors/${actorId}/movies?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}&new_only=${newOnly}&upcoming_only=${upcomingOnly}`);
+  const data = await api(`/api/actors/${actorId}/movies?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}&new_only=${newOnly}&upcoming_only=${upcomingOnly}&role=${encodeURIComponent(castRole)}`);
   const actorName = data.actor.name;
   const inPlexCount = data.items.filter((item) => item.in_plex).length;
   const showCreateCollection = inPlexOnly && inPlexCount > 0;
@@ -3351,7 +3987,7 @@ async function renderActorDetail(actorId) {
   app.innerHTML = `
     <div class="topbar">
       <div class="topbar-left">
-        <button id="actor-detail-back" class="back-icon-btn" title="Back to Actors" aria-label="Back to Actors">
+        <button id="actor-detail-back" class="back-icon-btn" title="Back to Cast" aria-label="Back to Cast">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7-5 5 5 5"/></svg>
         </button>
         <div class="topbar-title">
@@ -3374,8 +4010,8 @@ async function renderActorDetail(actorId) {
           <option value="new" ${sortBy === 'new' ? 'selected' : ''}>New</option>
           <option value="upcoming" ${sortBy === 'upcoming' ? 'selected' : ''}>Upcoming</option>
         </select>
-        <button id="movies-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${sortDir === 'asc' ? '↑' : '↓'}</button>
-        ${hasInPlexData || inPlexOnly ? `<button id="in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">✓</button>` : ''}
+        <button id="movies-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${sortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
+        ${hasInPlexData || inPlexOnly ? `<button id="in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>` : ''}
         ${hasMissingData || missingOnly ? `<button id="missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>` : ''}
         ${hasUpcomingData || upcomingOnly ? `<button id="movies-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>` : ''}
         ${hasNewData || newOnly ? `<button id="movies-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New">NEW</button>` : ''}
@@ -3402,12 +4038,15 @@ async function renderActorDetail(actorId) {
   `;
 
   document.getElementById('actor-detail-back').addEventListener('click', () => {
-    routeTo('actors');
+    history.pushState({}, '', `/cast?role=${encodeURIComponent(castRole)}`);
+    handleLocation();
   });
 
   const pushActorDetailQuery = (params) => {
     const query = params.toString();
-    history.pushState({}, '', `/actors/${actorId}${query ? `?${query}` : ''}`);
+    const nextParams = new URLSearchParams(query || '');
+    nextParams.set('role', castRole);
+    history.pushState({}, '', `/cast/${actorId}?${nextParams.toString()}`);
     renderActorDetail(actorId);
   };
 
@@ -3592,12 +4231,17 @@ async function renderActorDetail(actorId) {
       const isIgnored = movie.status === 'ignored' || Boolean(movie.ignored);
       const isMissing = movie.status === 'missing' || movie.status === 'new';
       const isToggleableIgnore = movie.status === 'missing' || isIgnored;
-      card.className = `movie-card${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}`;
+      card.className = `movie-card${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}${movie.release_date ? '' : ' no-date'}`;
       const tmdbUrl = movie.tmdb_id ? `https://www.themoviedb.org/movie/${movie.tmdb_id}` : null;
       const downloadUrl = buildDownloadLink('movie', movie.title);
-      const movieDownloadBadge = downloadUrl
-        ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">↓</span></a>`
-        : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">↓</span></span>`;
+      const allowMovieDownload = Boolean(movie.release_date) && !isFutureDate(movie.release_date);
+      const movieDownloadBadge = allowMovieDownload
+        ? (
+          downloadUrl
+            ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">&#8595;</span></a>`
+            : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">&#8595;</span></span>`
+        )
+        : '';
       const releaseLabel = movie.release_date ? formatDateDdMmYyyy(movie.release_date) : 'No date';
       const renderMovieStatusBadges = (status) => {
         const badgeNew = status === 'new';
@@ -3617,7 +4261,7 @@ async function renderActorDetail(actorId) {
           ${isToggleableIgnore && movie.tmdb_id ? `<button class="ignore-toggle-btn ignore-toggle-overlay" type="button" data-tmdb-id="${movie.tmdb_id}" data-ignored="${isIgnored ? '1' : '0'}">${isIgnored ? 'Unignore' : 'Ignore'}</button>` : ''}
           <img class="poster" src="${withImageCacheKey(movie.poster_url) || MOVIE_PLACEHOLDER}" alt="${movie.title}" loading="lazy" />
           ${renderMovieStatusBadges(movie.status)}
-          ${movie.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">✓</span>' : ''}
+          ${movie.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
           ${
             movie.in_plex
               ? `<a class="badge-link badge-overlay" href="${movie.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
@@ -3676,7 +4320,7 @@ async function renderActorDetail(actorId) {
             const updated = Array.isArray(refresh.items) ? refresh.items[0] : null;
             if (updated) {
               applyActorMissingScanUpdate(updated);
-              clearPersistentCache(CACHE_KEYS.actors);
+              for (const role of CAST_ROLES) clearPersistentCache(getActorsCacheKey(role));
             }
             const shouldHideInCurrentFilter = (
               (missingOnly && !(nextStatus === 'missing' || nextStatus === 'new'))
@@ -3752,3 +4396,7 @@ async function renderActorDetail(actorId) {
 }
 
 bootstrap();
+
+
+
+

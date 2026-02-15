@@ -17,7 +17,7 @@ from .config import (
     PLEX_PRODUCT,
     PLEX_VERSION,
 )
-from .utils import actor_id_from_name, normalize_title
+from .utils import cast_id_from_name, normalize_title
 
 PLEX_BASE = 'https://plex.tv'
 
@@ -340,14 +340,19 @@ def fetch_movie_library_snapshot(
     server_uri: str,
     server_token: str,
     server_client_identifier: str | None = None,
+    roles_to_scan: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    enabled_roles = set(roles_to_scan or {'actor', 'director', 'writer'})
+    enabled_roles = {role for role in enabled_roles if role in {'actor', 'director', 'writer'}}
+    if not enabled_roles:
+        enabled_roles = {'actor'}
     sections_root = _server_get(server_uri, server_token, '/library/sections')
     movie_sections = [
         s for s in sections_root.findall('Directory') if s.attrib.get('type') == 'movie'
     ]
 
-    actor_counter: Counter[str] = Counter()
-    actors_by_name: dict[str, dict[str, Any]] = {}
+    cast_counter: Counter[tuple[str, str]] = Counter()
+    cast_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     movie_rating_keys: list[str] = []
     seen_movie_rating_keys: set[str] = set()
     movies: list[dict[str, Any]] = []
@@ -399,16 +404,26 @@ def fetch_movie_library_snapshot(
                 }
             )
 
-            for role in video.findall('Role'):
-                actor_name = role.attrib.get('tag')
-                if not actor_name:
-                    continue
-                if actor_name not in actors_by_name:
-                    actors_by_name[actor_name] = {
-                        'actor_id': actor_id_from_name(actor_name),
-                        'name': actor_name,
-                        'image_url': _normalize_actor_thumb(role.attrib.get('thumb')),
-                    }
+            role_nodes = []
+            if 'actor' in enabled_roles:
+                role_nodes.append(('actor', video.findall('Role')))
+            if 'director' in enabled_roles:
+                role_nodes.append(('director', video.findall('Director')))
+            if 'writer' in enabled_roles:
+                role_nodes.append(('writer', video.findall('Writer')))
+            for cast_role, nodes in role_nodes:
+                for node in nodes:
+                    person_name = node.attrib.get('tag')
+                    if not person_name:
+                        continue
+                    key = (cast_role, person_name)
+                    if key not in cast_by_key:
+                        cast_by_key[key] = {
+                            'actor_id': cast_id_from_name(cast_role, person_name),
+                            'name': person_name,
+                            'role': cast_role,
+                            'image_url': _normalize_actor_thumb(node.attrib.get('thumb')),
+                        }
 
     # Count actor appearances from full movie metadata (not section listing),
     # because section listing can return truncated cast information.
@@ -432,30 +447,38 @@ def fetch_movie_library_snapshot(
                     if imdb_id:
                         movie_ref['imdb_id'] = imdb_id
 
-                seen_in_movie: set[str] = set()
-                for role in video.findall('Role'):
-                    actor_name = role.attrib.get('tag')
-                    if (
-                        not actor_name
-                        or actor_name in seen_in_movie
-                        or actor_name not in actors_by_name
-                    ):
-                        continue
-                    seen_in_movie.add(actor_name)
-                    actor_counter[actor_name] += 1
+                seen_in_movie_by_role: dict[str, set[str]] = {role: set() for role in enabled_roles}
+                role_nodes = []
+                if 'actor' in enabled_roles:
+                    role_nodes.append(('actor', video.findall('Role')))
+                if 'director' in enabled_roles:
+                    role_nodes.append(('director', video.findall('Director')))
+                if 'writer' in enabled_roles:
+                    role_nodes.append(('writer', video.findall('Writer')))
+                for cast_role, nodes in role_nodes:
+                    for node in nodes:
+                        person_name = node.attrib.get('tag')
+                        if not person_name:
+                            continue
+                        key = (cast_role, person_name)
+                        if person_name in seen_in_movie_by_role[cast_role] or key not in cast_by_key:
+                            continue
+                        seen_in_movie_by_role[cast_role].add(person_name)
+                        cast_counter[key] += 1
 
-                    thumb_url = _normalize_actor_thumb(role.attrib.get('thumb'))
-                    if thumb_url and not actors_by_name[actor_name].get('image_url'):
-                        actors_by_name[actor_name]['image_url'] = thumb_url
+                        thumb_url = _normalize_actor_thumb(node.attrib.get('thumb'))
+                        if thumb_url and not cast_by_key[key].get('image_url'):
+                            cast_by_key[key]['image_url'] = thumb_url
 
     now = datetime.now(UTC).isoformat()
     actors = []
-    for actor_name, count in actor_counter.items():
-        base = actors_by_name[actor_name]
+    for cast_key, count in cast_counter.items():
+        base = cast_by_key[cast_key]
         actors.append(
             {
                 'actor_id': base['actor_id'],
                 'name': base['name'],
+                'role': base['role'],
                 'appearances': count,
                 'image_url': base['image_url'],
                 'updated_at': now,

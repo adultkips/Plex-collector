@@ -22,6 +22,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS actors (
                 actor_id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'actor',
                 appearances INTEGER NOT NULL,
                 tmdb_person_id INTEGER,
                 image_url TEXT,
@@ -148,6 +149,8 @@ def init_db() -> None:
         actor_columns = {row[1] for row in conn.execute("PRAGMA table_info('actors')").fetchall()}
         if 'movies_in_plex_count' not in actor_columns:
             conn.execute('ALTER TABLE actors ADD COLUMN movies_in_plex_count INTEGER')
+        if 'role' not in actor_columns:
+            conn.execute("ALTER TABLE actors ADD COLUMN role TEXT NOT NULL DEFAULT 'actor'")
         if 'missing_movie_count' not in actor_columns:
             conn.execute('ALTER TABLE actors ADD COLUMN missing_movie_count INTEGER')
         if 'missing_new_count' not in actor_columns:
@@ -160,6 +163,7 @@ def init_db() -> None:
             conn.execute('ALTER TABLE actors ADD COLUMN next_upcoming_release_date TEXT')
         if 'missing_scan_at' not in actor_columns:
             conn.execute('ALTER TABLE actors ADD COLUMN missing_scan_at TEXT')
+        conn.execute("UPDATE actors SET role = 'actor' WHERE role IS NULL OR TRIM(role) = ''")
         if 'original_title' not in columns:
             conn.execute('ALTER TABLE plex_movies ADD COLUMN original_title TEXT')
         if 'normalized_original_title' not in columns:

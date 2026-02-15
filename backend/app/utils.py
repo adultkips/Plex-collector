@@ -11,3 +11,11 @@ def normalize_title(title: str) -> str:
 
 def actor_id_from_name(name: str) -> str:
     return normalize_title(name).replace(' ', '-')
+
+
+def cast_id_from_name(role: str, name: str) -> str:
+    base = actor_id_from_name(name)
+    normalized_role = (role or '').strip().lower()
+    if normalized_role == 'actor' or not normalized_role:
+        return base
+    return f'{normalized_role}-{base}'

@@ -36,7 +36,7 @@ def _tmdb_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]
     return response.json()
 
 
-def search_person(name: str) -> dict[str, Any] | None:
+def search_person(name: str, preferred_department: str = 'Acting') -> dict[str, Any] | None:
     payload = _tmdb_get('/search/person', {'query': name, 'include_adult': 'false'})
     results = payload.get('results', [])
     if not results:
@@ -44,7 +44,7 @@ def search_person(name: str) -> dict[str, Any] | None:
 
     acting_first = sorted(
         results,
-        key=lambda p: (1 if p.get('known_for_department') == 'Acting' else 0, p.get('popularity', 0)),
+        key=lambda p: (1 if p.get('known_for_department') == preferred_department else 0, p.get('popularity', 0)),
         reverse=True,
     )
     person = acting_first[0]
@@ -56,10 +56,22 @@ def search_person(name: str) -> dict[str, Any] | None:
     }
 
 
-def get_person_movie_credits(person_id: int) -> list[dict[str, Any]]:
+def get_person_movie_credits(person_id: int, department: str = 'actor') -> list[dict[str, Any]]:
     payload = _tmdb_get(f'/person/{person_id}/movie_credits')
-    cast = payload.get('cast', [])
-    movies: list[dict[str, Any]] = []
+    role = (department or 'actor').strip().lower()
+    if role == 'director':
+        crew = payload.get('crew', [])
+        cast = [movie for movie in crew if str(movie.get('job') or '').lower() == 'director']
+    elif role == 'writer':
+        crew = payload.get('crew', [])
+        cast = [
+            movie for movie in crew
+            if str(movie.get('department') or '').lower() == 'writing'
+            or str(movie.get('job') or '').lower() in {'writer', 'screenplay', 'story'}
+        ]
+    else:
+        cast = payload.get('cast', [])
+    movies_by_key: dict[str, dict[str, Any]] = {}
     for movie in cast:
         title = movie.get('title')
         if not title:
@@ -67,17 +79,40 @@ def get_person_movie_credits(person_id: int) -> list[dict[str, Any]]:
         release = movie.get('release_date') or ''
         year = int(release[:4]) if len(release) >= 4 and release[:4].isdigit() else None
         poster_path = movie.get('poster_path')
-        movies.append(
-            {
-                'tmdb_id': movie.get('id'),
-                'title': title,
-                'original_title': movie.get('original_title') or None,
-                'year': year,
-                'release_date': release if release else None,
-                'poster_url': f'{TMDB_IMAGE_BASE}{poster_path}' if poster_path else None,
-            }
-        )
+        item = {
+            'tmdb_id': movie.get('id'),
+            'title': title,
+            'original_title': movie.get('original_title') or None,
+            'year': year,
+            'release_date': release if release else None,
+            'poster_url': f'{TMDB_IMAGE_BASE}{poster_path}' if poster_path else None,
+        }
+        tmdb_id = item.get('tmdb_id')
+        if tmdb_id is not None:
+            key = f"id:{int(tmdb_id)}"
+        else:
+            key = f"title:{normalize_title(title)}|year:{year or 0}"
 
+        existing = movies_by_key.get(key)
+        if not existing:
+            movies_by_key[key] = item
+            continue
+
+        # Merge duplicates from TMDb crew/cast credits (e.g. writer + screenplay).
+        if not existing.get('original_title') and item.get('original_title'):
+            existing['original_title'] = item['original_title']
+        if not existing.get('release_date') and item.get('release_date'):
+            existing['release_date'] = item['release_date']
+        if not existing.get('poster_url') and item.get('poster_url'):
+            existing['poster_url'] = item['poster_url']
+        if not existing.get('year') and item.get('year'):
+            existing['year'] = item['year']
+        if not existing.get('tmdb_id') and item.get('tmdb_id') is not None:
+            existing['tmdb_id'] = item['tmdb_id']
+        if (not existing.get('title')) and item.get('title'):
+            existing['title'] = item['title']
+
+    movies = list(movies_by_key.values())
     movies.sort(key=lambda m: ((m['year'] or 0), m['title']), reverse=True)
     return movies
 

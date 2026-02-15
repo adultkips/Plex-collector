@@ -107,6 +107,10 @@ class ActorMissingScanPayload(BaseModel):
     actor_ids: list[str]
 
 
+class ScanCastPayload(BaseModel):
+    role: str = 'all'
+
+
 class IgnoreEpisodePayload(BaseModel):
     ignored: bool
 
@@ -330,6 +334,7 @@ def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str,
             '''
             SELECT
                 actor_id,
+                role,
                 tmdb_person_id,
                 image_url,
                 movies_in_plex_count,
@@ -346,6 +351,7 @@ def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str,
         prepared_actors: list[dict[str, Any]] = []
         for actor in actors:
             prepared = dict(actor)
+            prepared['role'] = str(prepared.get('role') or 'actor').strip().lower() or 'actor'
             previous = existing_by_actor_id.get(str(prepared.get('actor_id')))
             if previous:
                 if not prepared.get('tmdb_person_id') and previous.get('tmdb_person_id'):
@@ -377,6 +383,7 @@ def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str,
             INSERT INTO actors(
                 actor_id,
                 name,
+                role,
                 appearances,
                 tmdb_person_id,
                 image_url,
@@ -392,6 +399,7 @@ def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str,
             VALUES(
                 :actor_id,
                 :name,
+                :role,
                 :appearances,
                 :tmdb_person_id,
                 :image_url,
@@ -451,7 +459,7 @@ def _build_actor_movies_payload(
     now_dt = datetime.now(UTC)
     with get_conn() as conn:
         actor = conn.execute(
-            'SELECT actor_id, name, tmdb_person_id, image_url FROM actors WHERE actor_id = ?',
+            'SELECT actor_id, name, role, tmdb_person_id, image_url FROM actors WHERE actor_id = ?',
             (actor_id,),
         ).fetchone()
         if not actor:
@@ -459,7 +467,11 @@ def _build_actor_movies_payload(
 
         actor_data = dict(actor)
         if not actor_data['tmdb_person_id']:
-            person = search_person(actor_data['name'])
+            preferred_department = (
+                'Directing' if actor_data.get('role') == 'director'
+                else ('Writing' if actor_data.get('role') == 'writer' else 'Acting')
+            )
+            person = search_person(actor_data['name'], preferred_department)
             if not person:
                 return {'actor': actor_data, 'items': []}
             actor_data['tmdb_person_id'] = person['id']
@@ -502,45 +514,52 @@ def _build_actor_movies_payload(
             plex_original_title_buckets.setdefault(row['normalized_original_title'], []).append(dict(row))
 
     try:
-        credits = get_person_movie_credits(actor_data['tmdb_person_id'])
+        credits = get_person_movie_credits(actor_data['tmdb_person_id'], actor_data.get('role') or 'actor')
     except TMDbNotConfiguredError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     results = []
     for movie in credits:
+        release_date = str(movie.get('release_date') or '').strip() or None
+        has_valid_release_date = bool(release_date and _parse_iso_date(release_date))
         normalized = normalize_title(movie['title'])
         normalized_original = normalize_title(movie.get('original_title')) if movie.get('original_title') else None
-        matched = plex_by_tmdb_id.get(movie['tmdb_id']) if movie.get('tmdb_id') is not None else None
+        # Avoid matching movies without a valid release date ("No date"),
+        # since title-only fallbacks can create false positives.
+        matched = None
+        if has_valid_release_date:
+            matched = plex_by_tmdb_id.get(movie['tmdb_id']) if movie.get('tmdb_id') is not None else None
 
-        # Primary title+year match first.
-        if not matched:
-            matched = plex_by_key.get((normalized, movie['year']))
-
-        # Fallback: if title+year failed, try original_title+year.
-        if not matched and normalized_original and normalized_original != normalized:
-            matched = plex_by_key.get((normalized_original, movie['year']))
+            # Primary title+year match first.
             if not matched:
-                matched = plex_by_original_key.get((normalized_original, movie['year']))
+                matched = plex_by_key.get((normalized, movie['year']))
 
-        if not matched:
-            candidates = plex_title_buckets.get(normalized, [])
-            if candidates and movie['year'] is not None:
-                close = [c for c in candidates if c['year'] and abs(c['year'] - movie['year']) <= 1]
-                if close:
-                    matched = close[0]
-            elif candidates:
-                matched = candidates[0]
+            if not matched:
+                # Fallback: if title+year failed, try original_title+year.
+                if normalized_original and normalized_original != normalized:
+                    matched = plex_by_key.get((normalized_original, movie['year']))
+                    if not matched:
+                        matched = plex_by_original_key.get((normalized_original, movie['year']))
 
-        if not matched:
-            original_candidates = plex_original_title_buckets.get(normalized_original or normalized, [])
-            if original_candidates and movie['year'] is not None:
-                close_original = [
-                    c for c in original_candidates if c['year'] and abs(c['year'] - movie['year']) <= 1
-                ]
-                if close_original:
-                    matched = close_original[0]
-            elif original_candidates:
-                matched = original_candidates[0]
+            if not matched:
+                candidates = plex_title_buckets.get(normalized, [])
+                if candidates and movie['year'] is not None:
+                    close = [c for c in candidates if c['year'] and abs(c['year'] - movie['year']) <= 1]
+                    if close:
+                        matched = close[0]
+                elif candidates:
+                    matched = candidates[0]
+
+            if not matched:
+                original_candidates = plex_original_title_buckets.get(normalized_original or normalized, [])
+                if original_candidates and movie['year'] is not None:
+                    close_original = [
+                        c for c in original_candidates if c['year'] and abs(c['year'] - movie['year']) <= 1
+                    ]
+                    if close_original:
+                        matched = close_original[0]
+                elif original_candidates:
+                    matched = original_candidates[0]
 
         item = {
             **movie,
@@ -961,8 +980,12 @@ def set_download_prefix(payload: DownloadPrefixPayload) -> dict[str, Any]:
 
 
 @app.post('/api/scan/actors')
-def scan_actors() -> dict[str, Any]:
+def scan_actors(payload: ScanCastPayload | None = None) -> dict[str, Any]:
     auth_token, server = ensure_auth()
+    role_raw = (payload.role if payload else 'all').strip().lower()
+    if role_raw not in {'all', 'actor', 'director', 'writer'}:
+        raise HTTPException(status_code=400, detail='Invalid cast scan role')
+    roles_to_scan = {'actor', 'director', 'writer'} if role_raw == 'all' else {role_raw}
 
     # Refresh connection list from Plex resources when possible.
     try:
@@ -994,6 +1017,7 @@ def scan_actors() -> dict[str, Any]:
                 uri,
                 server['token'],
                 server.get('client_identifier'),
+                roles_to_scan=roles_to_scan,
             )
             server['uri'] = uri
             set_setting('server', server)
@@ -1724,14 +1748,36 @@ def plex_image(thumb: str = Query(...)) -> Response:
     raise HTTPException(status_code=404, detail='Plex image could not be loaded') from last_error
 
 
+@app.get('/api/cast/roles')
+def cast_roles() -> dict[str, Any]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            '''
+            SELECT role, COUNT(*) AS total
+            FROM actors
+            GROUP BY role
+            '''
+        ).fetchall()
+    totals = {'actor': 0, 'director': 0, 'writer': 0}
+    for row in rows:
+        role = str(row['role'] or 'actor').strip().lower()
+        if role in totals:
+            totals[role] = int(row['total'] or 0)
+    return {'items': totals, 'last_scan_at': get_setting('last_scan_at')}
+
+
 @app.get('/api/actors')
-def actors() -> dict[str, Any]:
+def actors(role: str = Query('actor')) -> dict[str, Any]:
+    role_value = role.strip().lower() or 'actor'
+    if role_value not in {'actor', 'director', 'writer'}:
+        raise HTTPException(status_code=400, detail='Invalid cast role')
     with get_conn() as conn:
         rows = conn.execute(
             '''
             SELECT
                 actor_id,
                 name,
+                role,
                 appearances,
                 tmdb_person_id,
                 image_url,
@@ -1744,12 +1790,14 @@ def actors() -> dict[str, Any]:
                 missing_scan_at,
                 updated_at
             FROM actors
+            WHERE role = ?
             ORDER BY appearances DESC, name ASC
             '''
-        ).fetchall()
+        , (role_value,)).fetchall()
 
     return {
         'items': [dict(r) for r in rows],
+        'role': role_value,
         'last_scan_at': get_setting('last_scan_at'),
     }
 

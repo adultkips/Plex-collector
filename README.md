@@ -10,27 +10,28 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
 - First-run onboarding flow with `Login with Plex`, Plex server selection, and TMDb API key setup.
 - Localhost-only architecture: all scans, matching, and state are handled locally on your machine.
 - Profile hub with centralized settings (`Server`, `TMDb key`, `Download Prefix`).
-- Floating icon-only bottom navigation `Profile`, `Actors`, `Shows`, and `Calendar`.
+- Floating icon-only bottom navigation `Profile`, `Cast`, `Shows`, and `Calendar`.
 - Download Prefix system:
-  - Configurable start/format/end templates for `Actors`, `Movies`, `Shows`, `Seasons`, and `Episodes`.
+  - Configurable start/format/end templates for `Cast`, `Movies`, `Shows`, `Seasons`, and `Episodes`.
   - Multiple keyword formats supported (`%20`, `-`, `+`) with live examples.
   - Prefix reset/save controls at card level.
 - Combined Plex library scanning:
-  - `Scan Actors` to index actors and movie links.
+  - `Scan Cast` to index cast roles and movie links (`Actors`, `Directors`, `Writers`).
   - `Scan Shows` to index shows, seasons, and episodes.
   - Unified scan log with latest runs first.
-- Actors experience:
+- Cast experience:
+  - Role chooser view for `Actors`, `Directors`, and `Writers`.
   - Large poster grid sourced from Plex.
   - A-Z/All filtering and live search.
   - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW`.
   - Sorting by `Movies`, `Missing`, `Name`, `New`, and `Upcoming` with ASC/DESC direction.
   - Global `Scan Movies` modal with scoped scan (`current filter`) or `Scan All`.
-  - Per-actor scan pill with last-scan date and quick refresh.
+  - Per-person scan pill with last-scan date and quick refresh.
   - Visual status badges and borders for `In Plex`, `Missing`, `Upcoming` and `NEW`.
-  - Direct actor download badge support via configurable prefix links.
-- Actor movie detail:
+  - Direct cast download badge support via configurable prefix links.
+- Cast movie detail:
   - Large poster grid sourced from Plex.
-  - TMDb filmography matching against Plex library.
+  - Role-specific TMDb filmography matching against Plex library.
   - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW`.
   - Sorting by `Date`, `Title`, `Missing`, `New`, and `Upcoming` with ASC/DESC direction.
   - Clickable TMDb movie cards and Plex/deep-link badges.
@@ -60,20 +61,19 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
 ## Screenshots
 <table>
   <tr>
-    <td align="center"><img src="screenshots/profile-v2.png" alt="Profile" width="420"><br><sub>Profile</sub></td>
-    <td align="center"><img src="screenshots/seasons-v2.png" alt="Seasons" width="420"><br><sub>Seasons</sub></td>
+    <td align="center"><img src="screenshots/profile.png" alt="Profile" width="300"><br><sub>Profile</sub></td>
+    <td align="center"><img src="screenshots/calendar.png" alt="Calendar" width="300"><br><sub>Calendar</sub></td>
+    <td align="center"><img src="screenshots/dayview.png" alt="Dayview" width="300"><br><sub>Day overview</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="screenshots/actors-v2.png" alt="Actors" width="420"><br><sub>Actors</sub></td>
-    <td align="center"><img src="screenshots/episodes-v2.png" alt="Episodes" width="420"><br><sub>Episodes</sub></td>
+    <td align="center"><img src="screenshots/cast.png" alt="Cast" width="300"><br><sub>Cast</sub></td>
+    <td align="center"><img src="screenshots/actors.png" alt="Actors" width="300"><br><sub>Actors</sub></td>
+    <td align="center"><img src="screenshots/movies.png" alt="Movies" width="300"><br><sub>Movies</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="screenshots/movies-v2.png" alt="Movies" width="420"><br><sub>Movies</sub></td>
-    <td align="center"><img src="screenshots/shows-v2.png" alt="Shows" width="420"><br><sub>Shows</sub></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="screenshots/calendar.png" alt="Calendar" width="420"><br><sub>Calendar</sub></td>
-    <td></td>
+    <td align="center"><img src="screenshots/shows.png" alt="Shows" width="300"><br><sub>Shows</sub></td>
+    <td align="center"><img src="screenshots/seasons.png" alt="Seasons" width="300"><br><sub>Seasons</sub></td>
+    <td align="center"><img src="screenshots/episodes.png" alt="Episodes" width="300"><br><sub>Episodes</sub></td>
   </tr>
 </table>
 
@@ -99,7 +99,7 @@ Open `http://127.0.0.1:8787`.
 
 ## Notes
 - The app is designed for local use on `127.0.0.1` and stores app state in `backend/data/plex_collector.db`.
-- Use the Profile page to run `Scan Actors` and `Scan Shows`, then use `Scan Episodes` from the Shows page when needed.
+- Use the Profile page to run `Scan Cast` and `Scan Shows`, then use `Scan Episodes` from the Shows page when needed.
 - UI performance is cache-first: Profile, Actors, and Shows render from local cache and refresh in the background.
 - Image cache is invalidated automatically after scans/resets to avoid stale posters.
 - `Install.bat` creates or recreates `.venv` if it belongs to another machine/user, and `start_server.bat` is used for normal startup.
