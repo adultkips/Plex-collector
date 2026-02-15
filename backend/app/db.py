@@ -146,6 +146,56 @@ def init_db() -> None:
             )
             '''
         )
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS tracked_cast (
+                actor_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            '''
+        )
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS tracked_movies (
+                tmdb_movie_id INTEGER PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            '''
+        )
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS tracked_shows (
+                show_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            '''
+        )
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS tracked_seasons (
+                show_id TEXT NOT NULL,
+                season_number INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (show_id, season_number)
+            )
+            '''
+        )
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS tracked_episodes (
+                show_id TEXT NOT NULL,
+                season_number INTEGER NOT NULL,
+                episode_number INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (show_id, season_number, episode_number)
+            )
+            '''
+        )
         columns = {row[1] for row in conn.execute("PRAGMA table_info('plex_movies')").fetchall()}
         actor_columns = {row[1] for row in conn.execute("PRAGMA table_info('actors')").fetchall()}
         if 'movies_in_plex_count' not in actor_columns:
@@ -265,6 +315,66 @@ def init_db() -> None:
                     air_date TEXT NOT NULL,
                     status TEXT NOT NULL,
                     ignored INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (show_id, season_number, episode_number)
+                )
+                '''
+            )
+        tracked_cast_columns = {row[1] for row in conn.execute("PRAGMA table_info('tracked_cast')").fetchall()}
+        if not tracked_cast_columns:
+            conn.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS tracked_cast (
+                    actor_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                '''
+            )
+        tracked_movie_columns = {row[1] for row in conn.execute("PRAGMA table_info('tracked_movies')").fetchall()}
+        if not tracked_movie_columns:
+            conn.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS tracked_movies (
+                    tmdb_movie_id INTEGER PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                '''
+            )
+        tracked_show_columns = {row[1] for row in conn.execute("PRAGMA table_info('tracked_shows')").fetchall()}
+        if not tracked_show_columns:
+            conn.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS tracked_shows (
+                    show_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                '''
+            )
+        tracked_season_columns = {row[1] for row in conn.execute("PRAGMA table_info('tracked_seasons')").fetchall()}
+        if not tracked_season_columns:
+            conn.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS tracked_seasons (
+                    show_id TEXT NOT NULL,
+                    season_number INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (show_id, season_number)
+                )
+                '''
+            )
+        tracked_episode_columns = {row[1] for row in conn.execute("PRAGMA table_info('tracked_episodes')").fetchall()}
+        if not tracked_episode_columns:
+            conn.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS tracked_episodes (
+                    show_id TEXT NOT NULL,
+                    season_number INTEGER NOT NULL,
+                    episode_number INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (show_id, season_number, episode_number)
                 )

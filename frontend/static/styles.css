@@ -76,6 +76,8 @@ h1, h2, h3 { margin: 0; }
   border-radius: 12px;
   padding: 8px var(--app-pad-x);
   font-weight: 700;
+  font-size: 14px;
+  line-height: 1;
   cursor: pointer;
 }
 
@@ -121,8 +123,8 @@ select.secondary-btn {
 }
 
 .search-toggle-btn svg {
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
   fill: currentColor;
 }
 
@@ -364,24 +366,9 @@ select.secondary-btn {
   fill: currentColor;
 }
 
-.actor-card.has-missing {
-  border-color: #b91c1c;
-  box-shadow: 0 0 0 1px rgba(185, 28, 28, 0.28);
-}
-
-.actor-card.has-new {
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.34);
-}
-
-.actor-card.has-upcoming {
-  border-color: #ec4899;
-  box-shadow: 0 0 0 1px rgba(236, 72, 153, 0.34);
-}
-
-.actor-card.has-mismatch {
-  border-color: #f59e0b;
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.34);
+.actor-card.has-tracked {
+  border-color: #f59e0b !important;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.4) !important;
 }
 
 .movie-card {
@@ -395,24 +382,9 @@ select.secondary-btn {
   box-shadow: 0 14px 24px rgba(0, 0, 0, 0.28);
 }
 
-.movie-card.has-missing {
-  border-color: #b91c1c;
-  box-shadow: 0 0 0 1px rgba(185, 28, 28, 0.28);
-}
-
-.movie-card.has-new {
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.34);
-}
-
-.movie-card.has-upcoming {
-  border-color: #ec4899;
-  box-shadow: 0 0 0 1px rgba(236, 72, 153, 0.34);
-}
-
-.movie-card.has-mismatch {
-  border-color: #f59e0b;
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.34);
+.movie-card.has-tracked {
+  border-color: #f59e0b !important;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.4) !important;
 }
 
 .movie-card.no-date {
@@ -613,6 +585,19 @@ body.is-scrolled .topbar {
   border: 1px solid #3a4658;
 }
 
+.badge-track {
+  background: #f59e0b;
+  color: #0b0f14;
+  border: 1px solid #fbbf24;
+  cursor: pointer;
+}
+
+.badge-track.active {
+  background: #1f232b;
+  color: #f59e0b;
+  border: 1px solid #f59e0b;
+}
+
 .badge-icon {
   font-weight: 800;
   width: 16px;
@@ -649,6 +634,17 @@ body.is-scrolled .topbar {
 
 .badge-round .badge-icon-download::before {
   font-size: 13px;
+}
+
+.badge-track .pin-icon {
+  display: inline-grid;
+  place-items: center;
+}
+
+.badge-track .pin-icon svg {
+  width: 13px;
+  height: 13px;
+  fill: currentColor;
 }
 
 .badge-link:hover {
@@ -901,6 +897,11 @@ body.is-scrolled .topbar {
   width: 12px;
   height: 12px;
   fill: currentColor;
+}
+
+.topbar .calendar-filter-icon svg {
+  width: 12px;
+  height: 12px;
 }
 
 .empty {
@@ -1344,6 +1345,14 @@ body.is-scrolled .topbar {
   cursor: default;
 }
 
+.calendar-event-line.is-clickable {
+  cursor: pointer;
+}
+
+.calendar-event-line.is-tracked {
+  border: 1px solid #f59e0b;
+}
+
 .calendar-event-dot {
   width: 7px;
   height: 7px;
@@ -1453,6 +1462,10 @@ body.is-scrolled .topbar {
   opacity: 0.55;
 }
 
+.calendar-type-legend-item .calendar-filter-icon {
+  color: #f59e0b;
+}
+
 .calendar-day-view {
   margin-top: 10px;
   min-height: 0;
@@ -1466,6 +1479,7 @@ body.is-scrolled .topbar {
   font-size: 0.92rem;
   font-weight: 700;
   color: #c8d4e8;
+  text-align: center;
 }
 
 .calendar-day-view-columns {
@@ -1538,6 +1552,15 @@ body.is-scrolled .topbar {
   border-radius: 10px;
   background: #162131;
   padding: 6px;
+}
+
+.calendar-day-event-item.is-clickable {
+  cursor: pointer;
+}
+
+.calendar-day-event-item.is-tracked {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.28);
 }
 
 .calendar-day-event-type-dot {

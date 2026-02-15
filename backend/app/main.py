@@ -126,6 +126,10 @@ class IgnoreMoviePayload(BaseModel):
     ignored: bool
 
 
+class TrackTogglePayload(BaseModel):
+    tracked: bool
+
+
 DEFAULT_DOWNLOAD_PREFIX = {
     'actor_start': '',
     'actor_mode': 'encoded_space',
@@ -313,6 +317,90 @@ def _set_movie_ignored_state(conn, actor_id: str, tmdb_movie_id: int, ignored: b
     )
 
 
+def _set_track_cast_state(conn, actor_id: str, tracked: bool) -> None:
+    now_iso = datetime.now(UTC).isoformat()
+    if tracked:
+        conn.execute(
+            '''
+            INSERT INTO tracked_cast (actor_id, created_at, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(actor_id) DO UPDATE SET updated_at = excluded.updated_at
+            ''',
+            (actor_id, now_iso, now_iso),
+        )
+        return
+    conn.execute('DELETE FROM tracked_cast WHERE actor_id = ?', (actor_id,))
+
+
+def _set_track_movie_state(conn, tmdb_movie_id: int, tracked: bool) -> None:
+    now_iso = datetime.now(UTC).isoformat()
+    if tracked:
+        conn.execute(
+            '''
+            INSERT INTO tracked_movies (tmdb_movie_id, created_at, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(tmdb_movie_id) DO UPDATE SET updated_at = excluded.updated_at
+            ''',
+            (tmdb_movie_id, now_iso, now_iso),
+        )
+        return
+    conn.execute('DELETE FROM tracked_movies WHERE tmdb_movie_id = ?', (tmdb_movie_id,))
+
+
+def _set_track_show_state(conn, show_id: str, tracked: bool) -> None:
+    now_iso = datetime.now(UTC).isoformat()
+    if tracked:
+        conn.execute(
+            '''
+            INSERT INTO tracked_shows (show_id, created_at, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(show_id) DO UPDATE SET updated_at = excluded.updated_at
+            ''',
+            (show_id, now_iso, now_iso),
+        )
+        return
+    conn.execute('DELETE FROM tracked_shows WHERE show_id = ?', (show_id,))
+
+
+def _set_track_season_state(conn, show_id: str, season_number: int, tracked: bool) -> None:
+    now_iso = datetime.now(UTC).isoformat()
+    if tracked:
+        conn.execute(
+            '''
+            INSERT INTO tracked_seasons (show_id, season_number, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(show_id, season_number) DO UPDATE SET updated_at = excluded.updated_at
+            ''',
+            (show_id, season_number, now_iso, now_iso),
+        )
+        return
+    conn.execute(
+        'DELETE FROM tracked_seasons WHERE show_id = ? AND season_number = ?',
+        (show_id, season_number),
+    )
+
+
+def _set_track_episode_state(conn, show_id: str, season_number: int, episode_number: int, tracked: bool) -> None:
+    now_iso = datetime.now(UTC).isoformat()
+    if tracked:
+        conn.execute(
+            '''
+            INSERT INTO tracked_episodes (show_id, season_number, episode_number, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(show_id, season_number, episode_number) DO UPDATE SET updated_at = excluded.updated_at
+            ''',
+            (show_id, season_number, episode_number, now_iso, now_iso),
+        )
+        return
+    conn.execute(
+        '''
+        DELETE FROM tracked_episodes
+        WHERE show_id = ? AND season_number = ? AND episode_number = ?
+        ''',
+        (show_id, season_number, episode_number),
+    )
+
+
 def get_download_prefix_settings() -> dict[str, str]:
     raw = get_setting('download_prefix', {})
     if not isinstance(raw, dict):
@@ -479,6 +567,11 @@ def _build_actor_movies_payload(
             raise HTTPException(status_code=404, detail='Actor not found')
 
         actor_data = dict(actor)
+        tracked_cast_row = conn.execute(
+            'SELECT 1 FROM tracked_cast WHERE actor_id = ?',
+            (actor_id,),
+        ).fetchone()
+        actor_data['tracked'] = bool(tracked_cast_row)
         if not actor_data['tmdb_person_id']:
             preferred_department = (
                 'Directing' if actor_data.get('role') == 'director'
@@ -511,6 +604,11 @@ def _build_actor_movies_payload(
             '''
         ).fetchall()
         ignored_movie_ids = _get_ignored_movie_ids(conn, actor_id)
+        tracked_movie_ids = {
+            int(row['tmdb_movie_id'])
+            for row in conn.execute('SELECT tmdb_movie_id FROM tracked_movies').fetchall()
+            if row['tmdb_movie_id'] is not None
+        }
 
     plex_by_key = {(r['normalized_title'], r['year']): dict(r) for r in plex_rows}
     plex_by_original_key = {
@@ -580,6 +678,7 @@ def _build_actor_movies_payload(
             'plex_rating_key': matched['plex_rating_key'] if matched else None,
             'library_section_id': matched['library_section_id'] if matched else None,
             'plex_web_url': matched['plex_web_url'] if matched else None,
+            'tracked': bool(movie.get('tmdb_id') is not None and int(movie['tmdb_id']) in tracked_movie_ids),
         }
         status = 'in_plex'
         if not item['in_plex']:
@@ -848,6 +947,11 @@ def reset_app_state() -> dict[str, bool]:
         conn.execute('DELETE FROM show_missing_episodes')
         conn.execute('DELETE FROM ignored_movies')
         conn.execute('DELETE FROM ignored_episodes')
+        conn.execute('DELETE FROM tracked_cast')
+        conn.execute('DELETE FROM tracked_movies')
+        conn.execute('DELETE FROM tracked_shows')
+        conn.execute('DELETE FROM tracked_seasons')
+        conn.execute('DELETE FROM tracked_episodes')
         conn.execute('DELETE FROM settings')
         conn.commit()
     return {'ok': True}
@@ -864,6 +968,11 @@ def reset_scan_state() -> dict[str, Any]:
         conn.execute('DELETE FROM show_missing_episodes')
         conn.execute('DELETE FROM ignored_movies')
         conn.execute('DELETE FROM ignored_episodes')
+        conn.execute('DELETE FROM tracked_cast')
+        conn.execute('DELETE FROM tracked_movies')
+        conn.execute('DELETE FROM tracked_shows')
+        conn.execute('DELETE FROM tracked_seasons')
+        conn.execute('DELETE FROM tracked_episodes')
         conn.commit()
     clear_settings(['scan_logs', 'show_scan_logs', 'last_scan_at', 'last_show_scan_at'])
     return {'ok': True, 'scan_logs': [], 'show_scan_logs': []}
@@ -1651,6 +1760,7 @@ def calendar_events(
         movie_rows = conn.execute(
             '''
             SELECT
+                m.tmdb_movie_id,
                 m.release_date AS event_date,
                 MIN(m.title) AS title,
                 MIN(m.poster_url) AS poster_url
@@ -1668,6 +1778,8 @@ def calendar_events(
             '''
             SELECT
                 e.air_date AS event_date,
+                e.show_id,
+                s.tmdb_show_id,
                 s.title AS show_title,
                 s.image_url AS poster_url,
                 e.season_number,
@@ -1683,6 +1795,28 @@ def calendar_events(
             ''',
             (start, end),
         ).fetchall()
+        tracked_movie_ids = {
+            int(row['tmdb_movie_id'])
+            for row in conn.execute('SELECT tmdb_movie_id FROM tracked_movies').fetchall()
+            if row['tmdb_movie_id'] is not None
+        }
+        tracked_show_ids = {
+            str(row['show_id'])
+            for row in conn.execute('SELECT show_id FROM tracked_shows').fetchall()
+            if row['show_id'] is not None
+        }
+        tracked_season_keys = {
+            (str(row['show_id']), int(row['season_number']))
+            for row in conn.execute('SELECT show_id, season_number FROM tracked_seasons').fetchall()
+            if row['show_id'] is not None and row['season_number'] is not None
+        }
+        tracked_episode_keys = {
+            (str(row['show_id']), int(row['season_number']), int(row['episode_number']))
+            for row in conn.execute(
+                'SELECT show_id, season_number, episode_number FROM tracked_episodes'
+            ).fetchall()
+            if row['show_id'] is not None and row['season_number'] is not None and row['episode_number'] is not None
+        }
 
     items: list[dict[str, Any]] = []
     for row in movie_rows:
@@ -1690,8 +1824,12 @@ def calendar_events(
             {
                 'date': str(row['event_date']),
                 'type': 'movie',
+                'tmdb_movie_id': int(row['tmdb_movie_id']) if row['tmdb_movie_id'] is not None else None,
                 'title': str(row['title'] or 'Untitled movie'),
                 'poster_url': str(row['poster_url'] or '').strip() or None,
+                'tracked': bool(
+                    row['tmdb_movie_id'] is not None and int(row['tmdb_movie_id']) in tracked_movie_ids
+                ),
             }
         )
     for row in show_rows:
@@ -1701,8 +1839,16 @@ def calendar_events(
             {
                 'date': str(row['event_date']),
                 'type': 'show',
+                'tmdb_show_id': int(row['tmdb_show_id']) if row['tmdb_show_id'] is not None else None,
+                'season_number': season_no,
+                'episode_number': episode_no,
                 'title': f"{row['show_title']} S{season_no:02d}E{episode_no:02d} - {row['episode_title']}",
                 'poster_url': str(row['poster_url'] or '').strip() or None,
+                'tracked': bool(
+                    str(row['show_id']) in tracked_show_ids
+                    or (str(row['show_id']), season_no) in tracked_season_keys
+                    or (str(row['show_id']), season_no, episode_no) in tracked_episode_keys
+                ),
             }
         )
     return {
@@ -1808,9 +1954,18 @@ def actors(role: str = Query('actor')) -> dict[str, Any]:
             ORDER BY appearances DESC, name ASC
             '''
         , (role_value,)).fetchall()
+        tracked_cast_ids = {
+            str(row['actor_id'])
+            for row in conn.execute('SELECT actor_id FROM tracked_cast').fetchall()
+            if row['actor_id'] is not None
+        }
+
+    items = [dict(r) for r in rows]
+    for item in items:
+        item['tracked'] = str(item.get('actor_id')) in tracked_cast_ids
 
     return {
-        'items': [dict(r) for r in rows],
+        'items': items,
         'role': role_value,
         'last_scan_at': get_setting('last_scan_at'),
     }
@@ -2153,8 +2308,16 @@ def shows() -> dict[str, Any]:
             ORDER BY episodes_in_plex DESC, s.title ASC
             '''
         ).fetchall()
+        tracked_show_ids = {
+            str(row['show_id'])
+            for row in conn.execute('SELECT show_id FROM tracked_shows').fetchall()
+            if row['show_id'] is not None
+        }
+    items = [dict(r) for r in rows]
+    for item in items:
+        item['tracked'] = str(item.get('show_id')) in tracked_show_ids
     return {
-        'items': [dict(r) for r in rows],
+        'items': items,
         'last_scan_at': get_setting('last_show_scan_at'),
     }
 
@@ -2210,6 +2373,17 @@ def show_seasons(
             (show_id,),
         ).fetchall()
         ignored_episode_keys = _get_ignored_episode_keys(conn, show_id)
+        tracked_show = bool(
+            conn.execute('SELECT 1 FROM tracked_shows WHERE show_id = ?', (show_id,)).fetchone()
+        )
+        tracked_seasons = {
+            int(row['season_number'])
+            for row in conn.execute(
+                'SELECT season_number FROM tracked_seasons WHERE show_id = ?',
+                (show_id,),
+            ).fetchall()
+            if row['season_number'] is not None
+        }
 
     plex_by_season: dict[int, set[int]] = {}
     plex_season_urls: dict[int, str] = {}
@@ -2279,6 +2453,7 @@ def show_seasons(
             'missing_old_count': missing_old_count,
             'missing_upcoming_count': missing_upcoming_count,
             'status': status,
+            'tracked': tracked_show or (season_no in tracked_seasons),
         }
         include = True
         if missing_only and (item['missing_old_count'] + item['missing_new_count']) <= 0:
@@ -2353,6 +2528,27 @@ def show_season_episodes(
             (show_id, season_number),
         ).fetchall()
         ignored_episode_keys = _get_ignored_episode_keys(conn, show_id, season_number)
+        tracked_show = bool(
+            conn.execute('SELECT 1 FROM tracked_shows WHERE show_id = ?', (show_id,)).fetchone()
+        )
+        tracked_season = bool(
+            conn.execute(
+                'SELECT 1 FROM tracked_seasons WHERE show_id = ? AND season_number = ?',
+                (show_id, season_number),
+            ).fetchone()
+        )
+        tracked_episode_keys = {
+            int(row['episode_number'])
+            for row in conn.execute(
+                '''
+                SELECT episode_number
+                FROM tracked_episodes
+                WHERE show_id = ? AND season_number = ?
+                ''',
+                (show_id, season_number),
+            ).fetchall()
+            if row['episode_number'] is not None
+        }
         plex_episode_keys = {
             (season_number, int(row['episode_number']))
             for row in plex_rows
@@ -2394,6 +2590,7 @@ def show_season_episodes(
             'in_plex': bool(matched),
             'plex_rating_key': matched['plex_rating_key'] if matched else None,
             'plex_web_url': matched['plex_web_url'] if matched else None,
+            'tracked': tracked_show or tracked_season or (int(episode['episode_number']) in tracked_episode_keys),
         }
         status = 'in_plex'
         if not item['in_plex']:
@@ -2456,6 +2653,133 @@ def set_show_episode_ignore(
         'season_number': season_number,
         'episode_number': episode_number,
         'ignored': bool(payload.ignored),
+    }
+
+
+@app.post('/api/track/cast/{actor_id}')
+def set_cast_tracked(actor_id: str, payload: TrackTogglePayload) -> dict[str, Any]:
+    actor_payload = _build_actor_movies_payload(actor_id, False, False, False, False)
+    movie_ids = {
+        int(item['tmdb_id'])
+        for item in actor_payload.get('items', [])
+        if item.get('tmdb_id') is not None and str(item.get('tmdb_id')).isdigit()
+    }
+    with get_conn() as conn:
+        actor = conn.execute('SELECT actor_id FROM actors WHERE actor_id = ?', (actor_id,)).fetchone()
+        if not actor:
+            raise HTTPException(status_code=404, detail='Cast item not found')
+        _set_track_cast_state(conn, actor_id, payload.tracked)
+        for tmdb_movie_id in movie_ids:
+            _set_track_movie_state(conn, tmdb_movie_id, payload.tracked)
+        conn.commit()
+    return {'ok': True, 'actor_id': actor_id, 'tracked': bool(payload.tracked), 'movies_updated': len(movie_ids)}
+
+
+@app.post('/api/track/movies/{tmdb_movie_id}')
+def set_movie_tracked(tmdb_movie_id: int, payload: TrackTogglePayload) -> dict[str, Any]:
+    if tmdb_movie_id <= 0:
+        raise HTTPException(status_code=400, detail='Invalid TMDb movie id')
+    with get_conn() as conn:
+        _set_track_movie_state(conn, tmdb_movie_id, payload.tracked)
+        conn.commit()
+    return {'ok': True, 'tmdb_movie_id': tmdb_movie_id, 'tracked': bool(payload.tracked)}
+
+
+@app.post('/api/track/shows/{show_id}')
+def set_show_tracked(show_id: str, payload: TrackTogglePayload) -> dict[str, Any]:
+    seasons_data = show_seasons(show_id, False, False, False, False)
+    season_numbers = [
+        int(item['season_number'])
+        for item in seasons_data.get('items', [])
+        if item.get('season_number') is not None and int(item.get('season_number') or 0) > 0
+    ]
+    episode_keys: set[tuple[int, int]] = set()
+    for season_number in season_numbers:
+        episodes_data = show_season_episodes(show_id, season_number, False, False, False, False)
+        for item in episodes_data.get('items', []):
+            ep_no = int(item.get('episode_number') or 0)
+            if ep_no > 0:
+                episode_keys.add((season_number, ep_no))
+    with get_conn() as conn:
+        show = conn.execute('SELECT show_id FROM plex_shows WHERE show_id = ?', (show_id,)).fetchone()
+        if not show:
+            raise HTTPException(status_code=404, detail='Show not found')
+        _set_track_show_state(conn, show_id, payload.tracked)
+        if payload.tracked:
+            for season_number in season_numbers:
+                _set_track_season_state(conn, show_id, season_number, payload.tracked)
+            for season_number, episode_number in episode_keys:
+                _set_track_episode_state(conn, show_id, season_number, episode_number, payload.tracked)
+        else:
+            conn.execute('DELETE FROM tracked_seasons WHERE show_id = ?', (show_id,))
+            conn.execute('DELETE FROM tracked_episodes WHERE show_id = ?', (show_id,))
+        conn.commit()
+    return {
+        'ok': True,
+        'show_id': show_id,
+        'tracked': bool(payload.tracked),
+        'seasons_updated': len(season_numbers),
+        'episodes_updated': len(episode_keys),
+    }
+
+
+@app.post('/api/track/shows/{show_id}/seasons/{season_number}')
+def set_season_tracked(show_id: str, season_number: int, payload: TrackTogglePayload) -> dict[str, Any]:
+    if season_number <= 0:
+        raise HTTPException(status_code=400, detail='Invalid season number')
+    episodes_data = show_season_episodes(show_id, season_number, False, False, False, False)
+    episode_numbers = [
+        int(item['episode_number'])
+        for item in episodes_data.get('items', [])
+        if item.get('episode_number') is not None and int(item.get('episode_number') or 0) > 0
+    ]
+    with get_conn() as conn:
+        show = conn.execute('SELECT show_id FROM plex_shows WHERE show_id = ?', (show_id,)).fetchone()
+        if not show:
+            raise HTTPException(status_code=404, detail='Show not found')
+        _set_track_season_state(conn, show_id, season_number, payload.tracked)
+        if payload.tracked:
+            for episode_number in episode_numbers:
+                _set_track_episode_state(conn, show_id, season_number, episode_number, payload.tracked)
+        else:
+            conn.execute(
+                '''
+                DELETE FROM tracked_episodes
+                WHERE show_id = ? AND season_number = ?
+                ''',
+                (show_id, season_number),
+            )
+        conn.commit()
+    return {
+        'ok': True,
+        'show_id': show_id,
+        'season_number': season_number,
+        'tracked': bool(payload.tracked),
+        'episodes_updated': len(episode_numbers),
+    }
+
+
+@app.post('/api/track/shows/{show_id}/seasons/{season_number}/episodes/{episode_number}')
+def set_episode_tracked(
+    show_id: str,
+    season_number: int,
+    episode_number: int,
+    payload: TrackTogglePayload,
+) -> dict[str, Any]:
+    if season_number <= 0 or episode_number <= 0:
+        raise HTTPException(status_code=400, detail='Invalid season or episode number')
+    with get_conn() as conn:
+        show = conn.execute('SELECT show_id FROM plex_shows WHERE show_id = ?', (show_id,)).fetchone()
+        if not show:
+            raise HTTPException(status_code=404, detail='Show not found')
+        _set_track_episode_state(conn, show_id, season_number, episode_number, payload.tracked)
+        conn.commit()
+    return {
+        'ok': True,
+        'show_id': show_id,
+        'season_number': season_number,
+        'episode_number': episode_number,
+        'tracked': bool(payload.tracked),
     }
 
 

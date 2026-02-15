@@ -10,6 +10,7 @@ const SHOW_PLACEHOLDER = 'https://placehold.co/500x750?text=Show';
 const PLEX_LOGO_PATH = '/assets/plexlogo.png';
 const SCAN_ICON_PATH = "M20 5v5h-5l1.9-1.9A6.98 6.98 0 0 0 12 6a7 7 0 0 0-6.93 6h-2.02A9.01 9.01 0 0 1 12 4c2.21 0 4.24.8 5.8 2.12L20 4v1Zm-16 9h5l-1.9 1.9A6.98 6.98 0 0 0 12 18a7 7 0 0 0 6.93-6h2.02A9.01 9.01 0 0 1 12 20c-2.21 0-4.24-.8-5.8-2.12L4 20v-6Z";
 const CALENDAR_ICON_PATH = "M7 2h2v2h6V2h2v2h3v18H4V4h3V2Zm11 8H6v10h12V10Zm0-4H6v2h12V6Z";
+const PIN_ICON_PATH = "m12 2.75 2.91 5.89 6.5.95-4.7 4.58 1.11 6.47L12 17.58l-5.82 3.06 1.11-6.47-4.7-4.58 6.5-.95L12 2.75Z";
 const ACTORS_BATCH_SIZE = 80;
 const SCAN_WORKERS_CONCURRENCY = 8; // "Scan workers"
 const ACTOR_INITIAL_FILTERS = ['All', '0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Æ', 'Ø', 'Å', '#'];
@@ -59,6 +60,7 @@ const CACHE_TTL_MS = {
 const LAST_ROUTE_KEY = 'lastAppRoute';
 const LAST_CAST_ROUTE_KEY = 'lastCastRoute';
 const LAST_SHOWS_ROUTE_KEY = 'lastShowsRoute';
+const SCROLL_POS_PREFIX = 'scrollPos:';
 const CALENDAR_VIEW_MODE_KEY = 'calendarViewMode';
 const CALENDAR_SELECTED_DATE_KEY = 'calendarSelectedDate';
 const CALENDAR_CURSOR_KEY = 'calendarCursor';
@@ -128,6 +130,7 @@ const state = {
   actorsInPlexOnly: false,
   actorsNewOnly: false,
   actorsUpcomingOnly: false,
+  actorsTrackedOnly: false,
   showsSortBy: (() => {
     const stored = localStorage.getItem('showsSortBy') || 'name';
     if (stored === 'amount') return 'episodes';
@@ -141,6 +144,9 @@ const state = {
   showsInPlexOnly: false,
   showsNewOnly: false,
   showsUpcomingOnly: false,
+  showsTrackedOnly: false,
+  showsSeasonsTrackedOnly: false,
+  showsEpisodesTrackedOnly: false,
   showsInitialFilter: localStorage.getItem('showsInitialFilter') || 'All',
   showsVisibleCount: ACTORS_BATCH_SIZE,
   showsImageObserver: null,
@@ -170,6 +176,9 @@ const state = {
   calendarSelectedDate: localStorage.getItem(CALENDAR_SELECTED_DATE_KEY) || null,
   calendarShowMovies: localStorage.getItem('calendarShowMovies') !== '0',
   calendarShowShows: localStorage.getItem('calendarShowShows') !== '0',
+  calendarTrackedOnly: localStorage.getItem('calendarTrackedOnly') === '1',
+  currentPathname: window.location.pathname,
+  currentRouteKey: `${window.location.pathname}${window.location.search || ''}`,
 };
 
 const LOCAL_STORAGE_RESET_KEYS = [
@@ -192,6 +201,7 @@ const LOCAL_STORAGE_RESET_KEYS = [
   CALENDAR_VIEW_MODE_KEY,
   CALENDAR_SELECTED_DATE_KEY,
   CALENDAR_CURSOR_KEY,
+  'calendarTrackedOnly',
   CACHE_KEYS.profile,
   CACHE_KEYS.actors,
   CACHE_KEYS.shows,
@@ -392,7 +402,7 @@ function persistLastShowsRoute(pathAndQuery = `${window.location.pathname}${wind
 function applyCalendarUrlState() {
   const params = new URLSearchParams(window.location.search);
   const hasCalendarState =
-    params.has('view') || params.has('date') || params.has('year') || params.has('month') || params.has('types');
+    params.has('view') || params.has('date') || params.has('year') || params.has('month') || params.has('types') || params.has('tracked');
   if (!hasCalendarState) return false;
 
   const today = new Date();
@@ -434,6 +444,7 @@ function applyCalendarUrlState() {
     state.calendarShowMovies = true;
     state.calendarShowShows = true;
   }
+  state.calendarTrackedOnly = params.get('tracked') === '1';
 
   state.calendarViewMode = view;
   state.calendarSelectedDate = selectedDate;
@@ -441,6 +452,7 @@ function applyCalendarUrlState() {
   persistCalendarViewState();
   localStorage.setItem('calendarShowMovies', state.calendarShowMovies ? '1' : '0');
   localStorage.setItem('calendarShowShows', state.calendarShowShows ? '1' : '0');
+  localStorage.setItem('calendarTrackedOnly', state.calendarTrackedOnly ? '1' : '0');
   return true;
 }
 
@@ -459,6 +471,9 @@ function syncCalendarUrl(historyMode = 'replace') {
   const isMovieOnly = state.calendarShowMovies && !state.calendarShowShows;
   const isShowOnly = !state.calendarShowMovies && state.calendarShowShows;
   params.set('types', isMovieOnly ? 'movie' : (isShowOnly ? 'show' : 'all'));
+  if (state.calendarTrackedOnly) {
+    params.set('tracked', '1');
+  }
 
   const nextUrl = `/calendar?${params.toString()}`;
   const currentUrl = `${window.location.pathname}${window.location.search}`;
@@ -489,7 +504,34 @@ function persistCalendarViewState() {
     } else {
       localStorage.removeItem(CALENDAR_CURSOR_KEY);
     }
+    localStorage.setItem('calendarTrackedOnly', state.calendarTrackedOnly ? '1' : '0');
   } catch {}
+}
+
+function buildCalendarTmdbUrl(item) {
+  if (!item || typeof item !== 'object') return '';
+  const type = item.type === 'show' ? 'show' : 'movie';
+  if (type === 'movie') {
+    const tmdbMovieId = Number(item.tmdb_movie_id || 0);
+    if (Number.isFinite(tmdbMovieId) && tmdbMovieId > 0) {
+      return `https://www.themoviedb.org/movie/${tmdbMovieId}`;
+    }
+    return '';
+  }
+  const tmdbShowId = Number(item.tmdb_show_id || 0);
+  const seasonNo = Number(item.season_number || 0);
+  const episodeNo = Number(item.episode_number || 0);
+  if (
+    Number.isFinite(tmdbShowId) && tmdbShowId > 0
+    && Number.isFinite(seasonNo) && seasonNo > 0
+    && Number.isFinite(episodeNo) && episodeNo > 0
+  ) {
+    return `https://www.themoviedb.org/tv/${tmdbShowId}/season/${seasonNo}/episode/${episodeNo}`;
+  }
+  if (Number.isFinite(tmdbShowId) && tmdbShowId > 0) {
+    return `https://www.themoviedb.org/tv/${tmdbShowId}`;
+  }
+  return '';
 }
 
 function clearPrimaryDataCaches() {
@@ -623,6 +665,16 @@ function calendarIconTag(iconClass = 'calendar-icon') {
   `;
 }
 
+function pinIconTag(iconClass = 'pin-icon') {
+  return `
+    <span class="${iconClass}" aria-hidden="true">
+      <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+        <path d="${PIN_ICON_PATH}"></path>
+      </svg>
+    </span>
+  `;
+}
+
 function getShowPrimaryStatus(show) {
   const newCount = Number.isFinite(Number(show?.missing_new_count)) ? Number(show.missing_new_count) : 0;
   const oldCount = Number.isFinite(Number(show?.missing_old_count)) ? Number(show.missing_old_count) : 0;
@@ -695,14 +747,39 @@ function buildRoundDownloadBadge(downloadUrl) {
   return `<span class="badge-link badge-round badge-download badge-disabled has-pill-tooltip" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}"><span class="badge-icon badge-icon-download">&#8595;</span></span>`;
 }
 
+function buildRoundTrackBadge(trackMeta) {
+  const active = Boolean(trackMeta?.active);
+  const tooltip = active ? 'Untrack' : 'Track';
+  const attrs = [
+    'type="button"',
+    `class="badge-link badge-round badge-track has-pill-tooltip${active ? ' active' : ''}"`,
+    `title="${tooltip}"`,
+    `aria-label="${tooltip}"`,
+    `data-tooltip="${tooltip}"`,
+  ];
+  if (trackMeta?.kind) attrs.push(`data-track-kind="${escapeHtml(trackMeta.kind)}"`);
+  if (trackMeta?.actorId) attrs.push(`data-actor-id="${escapeHtml(trackMeta.actorId)}"`);
+  if (trackMeta?.tmdbMovieId) attrs.push(`data-tmdb-movie-id="${escapeHtml(trackMeta.tmdbMovieId)}"`);
+  if (trackMeta?.showId) attrs.push(`data-show-id="${escapeHtml(trackMeta.showId)}"`);
+  if (trackMeta?.seasonNumber != null) attrs.push(`data-season-number="${escapeHtml(trackMeta.seasonNumber)}"`);
+  if (trackMeta?.episodeNumber != null) attrs.push(`data-episode-number="${escapeHtml(trackMeta.episodeNumber)}"`);
+  attrs.push(`data-tracked="${active ? '1' : '0'}"`);
+  return `<button ${attrs.join(' ')}>${pinIconTag('pin-icon')}</button>`;
+}
+
 function buildCardBadgeStrip(options) {
   const {
+    showTrack = false,
+    trackMeta = null,
     showPlex = false,
     plexUrl = '',
     showDownload = false,
     downloadUrl = '',
   } = options || {};
   const badges = [];
+  if (showTrack) {
+    badges.push(buildRoundTrackBadge(trackMeta));
+  }
   if (showPlex) {
     badges.push(buildRoundPlexBadge(plexUrl));
   }
@@ -711,6 +788,69 @@ function buildCardBadgeStrip(options) {
   }
   if (!badges.length) return '';
   return `<div class="media-badges">${badges.join('')}</div>`;
+}
+
+async function toggleTrackFromBadge(buttonEl) {
+  if (!buttonEl || buttonEl.disabled) return false;
+  const kind = buttonEl.dataset.trackKind || '';
+  const nextTracked = buttonEl.dataset.tracked !== '1';
+  let url = '';
+  if (kind === 'cast') {
+    url = `/api/track/cast/${encodeURIComponent(buttonEl.dataset.actorId || '')}`;
+  } else if (kind === 'movie') {
+    url = `/api/track/movies/${encodeURIComponent(buttonEl.dataset.tmdbMovieId || '')}`;
+  } else if (kind === 'show') {
+    url = `/api/track/shows/${encodeURIComponent(buttonEl.dataset.showId || '')}`;
+  } else if (kind === 'season') {
+    url = `/api/track/shows/${encodeURIComponent(buttonEl.dataset.showId || '')}/seasons/${encodeURIComponent(buttonEl.dataset.seasonNumber || '')}`;
+  } else if (kind === 'episode') {
+    url = `/api/track/shows/${encodeURIComponent(buttonEl.dataset.showId || '')}/seasons/${encodeURIComponent(buttonEl.dataset.seasonNumber || '')}/episodes/${encodeURIComponent(buttonEl.dataset.episodeNumber || '')}`;
+  } else {
+    return false;
+  }
+  buttonEl.disabled = true;
+  try {
+    const result = await api(url, {
+      method: 'POST',
+      body: JSON.stringify({ tracked: nextTracked }),
+    });
+    return result || {};
+  } finally {
+    buttonEl.disabled = false;
+  }
+}
+
+function buildTrackModalMessage(kind, result, nextTracked) {
+  const actionText = nextTracked ? 'Tracking' : 'Untracking';
+  if (kind === 'cast') {
+    const count = Number.isFinite(Number(result?.movies_updated)) ? Number(result.movies_updated) : 0;
+    return `${actionText} ${count} movies`;
+  }
+  if (kind === 'show' || kind === 'season') {
+    const count = Number.isFinite(Number(result?.episodes_updated)) ? Number(result.episodes_updated) : 0;
+    return `${actionText} ${count} episodes`;
+  }
+  return actionText;
+}
+
+async function handleTrackBadgeToggle(buttonEl, applyTrackedState) {
+  if (!buttonEl) return;
+  const kind = buttonEl.dataset.trackKind || '';
+  const nextTracked = buttonEl.dataset.tracked !== '1';
+  const showId = String(buttonEl.dataset.showId || '').trim();
+  showScanModal('Tracking...');
+  try {
+    const result = await toggleTrackFromBadge(buttonEl);
+    if (typeof applyTrackedState === 'function') {
+      applyTrackedState(nextTracked, result || {});
+    }
+    if ((kind === 'show' || kind === 'season' || kind === 'episode') && showId) {
+      invalidateShowDetailCaches(showId);
+    }
+    showScanSuccessModal(buildTrackModalMessage(kind, result, nextTracked), true);
+  } catch (error) {
+    showScanErrorModal(error.message, true);
+  }
 }
 
 function buildDownloadExampleText(type, settings) {
@@ -956,11 +1096,49 @@ function scrollToPageTop() {
   window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
 }
 
+function setScrollPosition(y) {
+  const value = Number.isFinite(Number(y)) ? Math.max(0, Number(y)) : 0;
+  window.scrollTo({ top: value, left: 0, behavior: 'auto' });
+}
+
+function writeRouteScrollPosition(routeKey, y) {
+  if (!routeKey) return;
+  try {
+    localStorage.setItem(`${SCROLL_POS_PREFIX}${routeKey}`, String(Math.max(0, Number(y) || 0)));
+  } catch {}
+}
+
+function readRouteScrollPosition(routeKey) {
+  if (!routeKey) return null;
+  try {
+    const raw = localStorage.getItem(`${SCROLL_POS_PREFIX}${routeKey}`);
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function restoreRouteScrollPosition(routeKey) {
+  const saved = readRouteScrollPosition(routeKey);
+  if (saved == null) return false;
+  requestAnimationFrame(() => setScrollPosition(saved));
+  return true;
+}
+
 async function handleLocation() {
-  scrollToPageTop();
+  const previousPath = state.currentPathname || '';
+  const previousRouteKey = state.currentRouteKey || '';
+  if (previousRouteKey) {
+    writeRouteScrollPosition(previousRouteKey, window.scrollY);
+  }
   cancelShowPrefetches();
   resetShowImageQueue();
   const path = window.location.pathname;
+  const routeKey = `${path}${window.location.search || ''}`;
+  state.currentPathname = path;
+  state.currentRouteKey = routeKey;
   const shouldTryBootRouteRestore = !hasCheckedBootRouteRestore && SHOULD_RESTORE_LAST_ROUTE_ON_BOOT && path === '/';
   hasCheckedBootRouteRestore = true;
   if (shouldTryBootRouteRestore) {
@@ -1022,6 +1200,7 @@ async function handleLocation() {
     }
     const actorId = path.split('/').pop();
     await renderActorDetail(actorId);
+    scrollToPageTop();
     setActiveNav('actors');
     return;
   }
@@ -1035,6 +1214,10 @@ async function handleLocation() {
     state.castRole = roleFromQuery;
     if (roleFromQuery) localStorage.setItem(CAST_ROLE_STORAGE_KEY, roleFromQuery);
     await renderActors();
+    const fromCastDetail = previousPath.startsWith('/cast/');
+    if (!(fromCastDetail && restoreRouteScrollPosition(routeKey))) {
+      scrollToPageTop();
+    }
     setActiveNav('actors');
     return;
   }
@@ -1052,6 +1235,7 @@ async function handleLocation() {
       const showId = path.split('/')[2];
       await renderShowSeasons(showId);
     }
+    scrollToPageTop();
     setActiveNav('shows');
     return;
   }
@@ -1062,6 +1246,10 @@ async function handleLocation() {
     setFullWidthGridMode(true);
     setNavVisible(true);
     await renderShows();
+    const fromShowDetail = previousPath.startsWith('/shows/');
+    if (!(fromShowDetail && restoreRouteScrollPosition(routeKey))) {
+      scrollToPageTop();
+    }
     setActiveNav('shows');
     return;
   }
@@ -1074,6 +1262,7 @@ async function handleLocation() {
     setFullWidthGridMode(false);
     setNavVisible(true);
     renderCalendar();
+    scrollToPageTop();
     setActiveNav('calendar');
     return;
   }
@@ -1082,6 +1271,7 @@ async function handleLocation() {
   setFullWidthGridMode(false);
   setNavVisible(true);
   await renderProfile();
+  scrollToPageTop();
   setActiveNav('profile');
 }
 
@@ -1098,6 +1288,7 @@ function renderCalendar() {
   const dayViewActive = state.calendarViewMode === 'day' && !!state.calendarSelectedDate;
   const movieOnly = state.calendarShowMovies && !state.calendarShowShows;
   const showOnly = !state.calendarShowMovies && state.calendarShowShows;
+  const trackedOnly = state.calendarTrackedOnly;
   const firstOfMonth = new Date(year, month, 1);
   const monthLabel = firstOfMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
   const mondayStartOffset = (firstOfMonth.getDay() + 6) % 7;
@@ -1137,7 +1328,13 @@ function renderCalendar() {
     `;
   }).join('');
   const dayViewTitle = selectedDay
-    ? selectedDay.toLocaleDateString('en-US', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })
+    ? (() => {
+      const weekday = selectedDay.toLocaleDateString('en-US', { weekday: 'long' });
+      const day = selectedDay.toLocaleDateString('en-US', { day: '2-digit' });
+      const month = selectedDay.toLocaleDateString('en-US', { month: 'long' });
+      const year = selectedDay.toLocaleDateString('en-US', { year: 'numeric' });
+      return `${weekday}, ${day} ${month}, ${year}`;
+    })()
     : '';
   app.innerHTML = `
     <section class="card calendar-layout-card">
@@ -1187,6 +1384,9 @@ function renderCalendar() {
         <button id="calendar-toggle-show" class="calendar-type-legend-item ${showOnly ? 'active' : ''}" type="button" aria-pressed="${showOnly ? 'true' : 'false'}">
           <i class="calendar-event-dot show" aria-hidden="true"></i>Show
         </button>
+        <button id="calendar-toggle-tracked" class="calendar-type-legend-item ${trackedOnly ? 'active' : ''}" type="button" aria-pressed="${trackedOnly ? 'true' : 'false'}">
+          ${pinIconTag('calendar-filter-icon')}Tracked
+        </button>
       </div>
     </section>
   `;
@@ -1217,6 +1417,13 @@ function renderCalendar() {
     }
     localStorage.setItem('calendarShowMovies', state.calendarShowMovies ? '1' : '0');
     localStorage.setItem('calendarShowShows', state.calendarShowShows ? '1' : '0');
+    persistCalendarViewState();
+    syncCalendarUrl('push');
+    renderCalendar();
+  });
+  document.getElementById('calendar-toggle-tracked')?.addEventListener('click', () => {
+    state.calendarTrackedOnly = !state.calendarTrackedOnly;
+    localStorage.setItem('calendarTrackedOnly', state.calendarTrackedOnly ? '1' : '0');
     persistCalendarViewState();
     syncCalendarUrl('push');
     renderCalendar();
@@ -1307,7 +1514,7 @@ function renderCalendar() {
         const type = item?.type === 'show' ? 'show' : 'movie';
         if (type === 'movie') return state.calendarShowMovies;
         return state.calendarShowShows;
-      });
+      }).filter((item) => (!state.calendarTrackedOnly || Boolean(item?.tracked)));
       const byDate = new Map();
       for (const item of items) {
         const dateKey = String(item?.date || '').trim();
@@ -1320,12 +1527,14 @@ function renderCalendar() {
           const title = String(event?.title || '').trim();
           const posterUrl = withImageCacheKey(String(event?.poster_url || '').trim());
           const dateText = formatDateDdMmYyyy(String(event?.date || ''));
+          const tmdbUrl = buildCalendarTmdbUrl(event);
           return `
             <div
-              class="calendar-event-line"
+              class="calendar-event-line${event?.tracked ? ' is-tracked' : ''}${tmdbUrl ? ' is-clickable' : ''}"
               data-title="${escapeHtml(title)}"
               data-date="${escapeHtml(dateText)}"
               data-poster="${escapeHtml(posterUrl || '')}"
+              data-tmdb-url="${escapeHtml(tmdbUrl)}"
             >
               <span class="calendar-event-dot ${type}" aria-hidden="true"></span>
               <span class="calendar-event-text">${escapeHtml(title)}</span>
@@ -1338,6 +1547,7 @@ function renderCalendar() {
           const posterUrl = withImageCacheKey(String(event?.poster_url || '').trim());
           const eventDateKey = String(event?.date || '').trim();
           const dateText = formatDateDdMmYyyy(eventDateKey);
+          const tmdbUrl = buildCalendarTmdbUrl(event);
           const fallbackPoster = type === 'show' ? SHOW_PLACEHOLDER : MOVIE_PLACEHOLDER;
           const today = new Date();
           const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
@@ -1371,7 +1581,7 @@ function renderCalendar() {
             )
             : '';
           return `
-            <div class="calendar-day-event-item">
+            <div class="calendar-day-event-item${event?.tracked ? ' is-tracked' : ''}${tmdbUrl ? ' is-clickable' : ''}" data-tmdb-url="${escapeHtml(tmdbUrl)}">
               <span class="calendar-day-event-type-dot ${type}" aria-hidden="true"></span>
               <img class="calendar-day-event-poster" src="${posterUrl || fallbackPoster}" alt="${escapeHtml(displayTitle)}" loading="lazy" />
               <div class="calendar-day-event-body">
@@ -1411,7 +1621,19 @@ function renderCalendar() {
       }
       const existingHoverCard = document.getElementById('calendar-event-hover-card');
       if (existingHoverCard) existingHoverCard.remove();
-      if (dayViewActive) return;
+      if (dayViewActive) {
+        app.querySelectorAll('.calendar-day-event-item').forEach((itemEl) => {
+          itemEl.querySelectorAll('.badge-link').forEach((badgeLink) => {
+            badgeLink.addEventListener('click', (event) => event.stopPropagation());
+          });
+          itemEl.addEventListener('click', () => {
+            const tmdbUrl = String(itemEl.getAttribute('data-tmdb-url') || '').trim();
+            if (!tmdbUrl) return;
+            window.open(tmdbUrl, '_blank', 'noopener,noreferrer');
+          });
+        });
+        return;
+      }
       const hoverCard = document.createElement('div');
       hoverCard.id = 'calendar-event-hover-card';
       hoverCard.className = 'calendar-event-hover-card hidden';
@@ -1464,6 +1686,11 @@ function renderCalendar() {
         });
         line.addEventListener('mouseleave', () => {
           hoverCard.classList.add('hidden');
+        });
+        line.addEventListener('click', () => {
+          const tmdbUrl = String(line.getAttribute('data-tmdb-url') || '').trim();
+          if (!tmdbUrl) return;
+          window.open(tmdbUrl, '_blank', 'noopener,noreferrer');
         });
       });
     })
@@ -2359,6 +2586,7 @@ async function resetApp() {
   state.actorsInPlexOnly = false;
   state.actorsNewOnly = false;
   state.actorsUpcomingOnly = false;
+  state.actorsTrackedOnly = false;
   state.showsSortBy = 'name';
   state.showsSortDir = 'asc';
   state.showsSeasonsSortDir = 'asc';
@@ -2367,11 +2595,15 @@ async function resetApp() {
   state.showsInPlexOnly = false;
   state.showsNewOnly = false;
   state.showsUpcomingOnly = false;
+  state.showsTrackedOnly = false;
+  state.showsSeasonsTrackedOnly = false;
+  state.showsEpisodesTrackedOnly = false;
   state.showsInitialFilter = 'All';
   state.showsVisibleCount = ACTORS_BATCH_SIZE;
   state.actorsInitialFilter = 'All';
   state.actorsVisibleCount = ACTORS_BATCH_SIZE;
   state.imageCacheKey = '1';
+  state.calendarTrackedOnly = false;
   state.createCollectionBusy = false;
   if (state.actorsImageObserver) {
     state.actorsImageObserver.disconnect();
@@ -2553,6 +2785,7 @@ async function renderActors(enableBackgroundRefresh = true) {
         <button id="actors-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.actorsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
         <button id="actors-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.actorsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="actors-missing-filter" class="toggle-btn has-pill-tooltip ${state.actorsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
+        <button id="actors-tracked-filter" class="toggle-btn has-pill-tooltip ${state.actorsTrackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
         <button id="actors-upcoming-filter" class="toggle-btn has-pill-tooltip ${state.actorsUpcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="actors-new-filter" class="toggle-btn has-pill-tooltip ${state.actorsNewOnly ? 'active' : ''}" data-tooltip="New">NEW</button>
       </div>
@@ -2605,6 +2838,7 @@ async function renderActors(enableBackgroundRefresh = true) {
       state.actorsMissingOnly = !state.actorsMissingOnly;
       if (state.actorsMissingOnly) {
         state.actorsInPlexOnly = false;
+        state.actorsTrackedOnly = false;
         state.actorsNewOnly = false;
         state.actorsUpcomingOnly = false;
       }
@@ -2618,6 +2852,7 @@ async function renderActors(enableBackgroundRefresh = true) {
       state.actorsInPlexOnly = !state.actorsInPlexOnly;
       if (state.actorsInPlexOnly) {
         state.actorsMissingOnly = false;
+        state.actorsTrackedOnly = false;
         state.actorsNewOnly = false;
         state.actorsUpcomingOnly = false;
       }
@@ -2625,6 +2860,21 @@ async function renderActors(enableBackgroundRefresh = true) {
       renderActors();
     });
   }
+  const actorsTrackedBtn = document.getElementById('actors-tracked-filter');
+  if (actorsTrackedBtn) {
+    actorsTrackedBtn.addEventListener('click', () => {
+      state.actorsTrackedOnly = !state.actorsTrackedOnly;
+      if (state.actorsTrackedOnly) {
+        state.actorsMissingOnly = false;
+        state.actorsInPlexOnly = false;
+        state.actorsNewOnly = false;
+        state.actorsUpcomingOnly = false;
+      }
+      state.actorsVisibleCount = ACTORS_BATCH_SIZE;
+      renderActors();
+    });
+  }
+
   const actorsNewBtn = document.getElementById('actors-new-filter');
   if (actorsNewBtn) {
     actorsNewBtn.addEventListener('click', () => {
@@ -2632,6 +2882,7 @@ async function renderActors(enableBackgroundRefresh = true) {
       if (state.actorsNewOnly) {
         state.actorsMissingOnly = false;
         state.actorsInPlexOnly = false;
+        state.actorsTrackedOnly = false;
         state.actorsUpcomingOnly = false;
       }
       state.actorsVisibleCount = ACTORS_BATCH_SIZE;
@@ -2645,6 +2896,7 @@ async function renderActors(enableBackgroundRefresh = true) {
       if (state.actorsUpcomingOnly) {
         state.actorsMissingOnly = false;
         state.actorsInPlexOnly = false;
+        state.actorsTrackedOnly = false;
         state.actorsNewOnly = false;
       }
       state.actorsVisibleCount = ACTORS_BATCH_SIZE;
@@ -2709,6 +2961,9 @@ async function renderActors(enableBackgroundRefresh = true) {
     if (state.actorsInPlexOnly) {
       visible = visible.filter((actor) => getActorPrimaryStatus(actor) === 'in_plex');
     }
+    if (state.actorsTrackedOnly) {
+      visible = visible.filter((actor) => Boolean(actor.tracked));
+    }
     if (state.actorsNewOnly) {
       visible = visible.filter((actor) => Number.isFinite(Number(actor.missing_new_count)) && Number(actor.missing_new_count) > 0);
     }
@@ -2763,7 +3018,7 @@ async function renderActors(enableBackgroundRefresh = true) {
       const moviesInPlex = Number.isFinite(Number(actor.movies_in_plex_count)) ? Number(actor.movies_in_plex_count) : Number(actor.appearances || 0);
       const scanDateText = formatScanDateOnly(actor.missing_scan_at);
       const card = document.createElement('article');
-      card.className = `actor-card${actorStatus === 'new' ? ' has-new' : (actorStatus === 'missing' ? ' has-missing' : (actorStatus === 'upcoming' ? ' has-upcoming' : ''))}`;
+      card.className = `actor-card${actor.tracked ? ' has-tracked' : ''}${actorStatus === 'new' ? ' has-new' : (actorStatus === 'missing' ? ' has-missing' : (actorStatus === 'upcoming' ? ' has-upcoming' : ''))}`;
       card.innerHTML = `
         <div class="poster-wrap">
           <button class="show-scan-pill" type="button" data-actor-id="${actor.actor_id}" title="Scan movies for this ${roleSingular}" aria-label="Scan movies for this ${roleSingular}">
@@ -2784,12 +3039,16 @@ async function renderActors(enableBackgroundRefresh = true) {
           ` : ''}
           ${isInPlex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
           ${buildCardBadgeStrip({
+            showTrack: true,
+            trackMeta: {
+              kind: 'cast',
+              actorId: String(actor.actor_id),
+              active: Boolean(actor.tracked),
+            },
             showPlex: true,
             plexUrl: actor.plex_web_url || '',
-            plexLabel: 'Open cast in Plex',
             showDownload: true,
             downloadUrl,
-            downloadLabel: 'Download cast search',
           })}
         </div>
         <div class="caption">
@@ -2810,6 +3069,16 @@ async function renderActors(enableBackgroundRefresh = true) {
       card.querySelectorAll('.media-badges .badge-link').forEach((badgeLink) => {
         badgeLink.addEventListener('click', (event) => event.stopPropagation());
       });
+      const trackBtn = card.querySelector('.badge-track');
+      if (trackBtn) {
+        trackBtn.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          await handleTrackBadgeToggle(trackBtn, (nextTracked) => {
+            actor.tracked = nextTracked;
+            renderActors();
+          });
+        });
+      }
       const scanPillBtn = card.querySelector('.show-scan-pill');
       scanPillBtn.addEventListener('click', async (event) => {
         event.stopPropagation();
@@ -2913,6 +3182,7 @@ async function renderActors(enableBackgroundRefresh = true) {
       });
     }
     if (state.actorsInPlexOnly) scoped = scoped.filter((actor) => getActorPrimaryStatus(actor) === 'in_plex');
+    if (state.actorsTrackedOnly) scoped = scoped.filter((actor) => Boolean(actor.tracked));
     if (state.actorsNewOnly) scoped = scoped.filter((actor) => Number.isFinite(Number(actor.missing_new_count)) && Number(actor.missing_new_count) > 0);
     if (state.actorsUpcomingOnly) scoped = scoped.filter((actor) => Number.isFinite(Number(actor.missing_upcoming_count)) && Number(actor.missing_upcoming_count) > 0);
     return scoped;
@@ -3023,6 +3293,7 @@ async function renderShows(enableBackgroundRefresh = true) {
         <button id="shows-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.showsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
         <button id="shows-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.showsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="shows-missing-episodes-filter" class="toggle-btn has-pill-tooltip ${state.showsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
+        <button id="shows-tracked-filter" class="toggle-btn has-pill-tooltip ${state.showsTrackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
         <button id="shows-upcoming-filter" class="toggle-btn has-pill-tooltip ${state.showsUpcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="shows-new-filter" class="toggle-btn has-pill-tooltip ${state.showsNewOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
       </div>
@@ -3066,6 +3337,7 @@ async function renderShows(enableBackgroundRefresh = true) {
       state.showsMissingOnly = !state.showsMissingOnly;
       if (state.showsMissingOnly) {
         state.showsInPlexOnly = false;
+        state.showsTrackedOnly = false;
         state.showsNewOnly = false;
         state.showsUpcomingOnly = false;
       }
@@ -3079,6 +3351,7 @@ async function renderShows(enableBackgroundRefresh = true) {
       state.showsInPlexOnly = !state.showsInPlexOnly;
       if (state.showsInPlexOnly) {
         state.showsMissingOnly = false;
+        state.showsTrackedOnly = false;
         state.showsNewOnly = false;
         state.showsUpcomingOnly = false;
       }
@@ -3086,6 +3359,21 @@ async function renderShows(enableBackgroundRefresh = true) {
       renderShows();
     });
   }
+  const trackedFilterBtn = document.getElementById('shows-tracked-filter');
+  if (trackedFilterBtn) {
+    trackedFilterBtn.addEventListener('click', () => {
+      state.showsTrackedOnly = !state.showsTrackedOnly;
+      if (state.showsTrackedOnly) {
+        state.showsMissingOnly = false;
+        state.showsInPlexOnly = false;
+        state.showsNewOnly = false;
+        state.showsUpcomingOnly = false;
+      }
+      state.showsVisibleCount = ACTORS_BATCH_SIZE;
+      renderShows();
+    });
+  }
+
   const newFilterBtn = document.getElementById('shows-new-filter');
   if (newFilterBtn) {
     newFilterBtn.addEventListener('click', () => {
@@ -3093,6 +3381,7 @@ async function renderShows(enableBackgroundRefresh = true) {
       if (state.showsNewOnly) {
         state.showsMissingOnly = false;
         state.showsInPlexOnly = false;
+        state.showsTrackedOnly = false;
         state.showsUpcomingOnly = false;
       }
       state.showsVisibleCount = ACTORS_BATCH_SIZE;
@@ -3106,6 +3395,7 @@ async function renderShows(enableBackgroundRefresh = true) {
       if (state.showsUpcomingOnly) {
         state.showsMissingOnly = false;
         state.showsInPlexOnly = false;
+        state.showsTrackedOnly = false;
         state.showsNewOnly = false;
       }
       state.showsVisibleCount = ACTORS_BATCH_SIZE;
@@ -3181,6 +3471,9 @@ async function renderShows(enableBackgroundRefresh = true) {
     if (includeMissingFilter && state.showsUpcomingOnly) {
       scoped = scoped.filter((show) => Number.isFinite(Number(show.missing_upcoming_count)) && Number(show.missing_upcoming_count) > 0);
     }
+    if (includeMissingFilter && state.showsTrackedOnly) {
+      scoped = scoped.filter((show) => Boolean(show.tracked));
+    }
     return scoped;
   };
 
@@ -3225,7 +3518,7 @@ async function renderShows(enableBackgroundRefresh = true) {
       const releasedText = formatReleasedDate(null, show.year);
       const showImage = withImageCacheKey(show.image_url) || SHOW_PLACEHOLDER;
       const card = document.createElement('article');
-      card.className = `actor-card${isNew ? ' has-new' : (hasMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}`;
+      card.className = `actor-card${show.tracked ? ' has-tracked' : ''}${isNew ? ' has-new' : (hasMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}`;
       card.innerHTML = `
         <div class="poster-wrap">
           <button class="show-scan-pill" type="button" data-show-id="${show.show_id}" title="Scan episodes for this show" aria-label="Scan episodes for this show">
@@ -3246,12 +3539,16 @@ async function renderShows(enableBackgroundRefresh = true) {
           ` : ''}
           ${hasNoMissing ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
           ${buildCardBadgeStrip({
+            showTrack: true,
+            trackMeta: {
+              kind: 'show',
+              showId: String(show.show_id),
+              active: Boolean(show.tracked),
+            },
             showPlex: true,
             plexUrl: show.plex_web_url || '',
-            plexLabel: 'Open show in Plex',
             showDownload: true,
             downloadUrl,
-            downloadLabel: 'Download show search',
           })}
         </div>
         <div class="caption">
@@ -3269,6 +3566,16 @@ async function renderShows(enableBackgroundRefresh = true) {
       card.querySelectorAll('.media-badges .badge-link').forEach((badgeLink) => {
         badgeLink.addEventListener('click', (event) => event.stopPropagation());
       });
+      const trackBtn = card.querySelector('.badge-track');
+      if (trackBtn) {
+        trackBtn.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          await handleTrackBadgeToggle(trackBtn, (nextTracked) => {
+            show.tracked = nextTracked;
+            renderShows();
+          });
+        });
+      }
       const scanPillBtn = card.querySelector('.show-scan-pill');
       scanPillBtn.addEventListener('click', async (event) => {
         event.stopPropagation();
@@ -3595,6 +3902,7 @@ async function renderShowSeasons(showId) {
   const inPlexOnly = search.get('inPlexOnly') === '1';
   const newOnly = search.get('newOnly') === '1';
   const upcomingOnly = search.get('upcomingOnly') === '1';
+  const trackedOnly = search.get('trackedOnly') === '1';
   const seasonsSortDir = state.showsSeasonsSortDir === 'desc' ? 'desc' : 'asc';
   const cachedData = getCachedShowSeasonsData(showId, missingOnly, inPlexOnly, newOnly, upcomingOnly);
   if (!cachedData) {
@@ -3632,6 +3940,7 @@ async function renderShowSeasons(showId) {
         <button id="seasons-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${seasonsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
         <button id="shows-in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="shows-missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
+        <button id="shows-tracked-toggle" class="toggle-btn has-pill-tooltip ${trackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
         <button id="shows-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="shows-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
       </div>
@@ -3655,6 +3964,7 @@ async function renderShowSeasons(showId) {
     const next = !missingOnly;
     if (next) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
+    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
     pushQuery(params);
@@ -3664,6 +3974,17 @@ async function renderShowSeasons(showId) {
     const next = !inPlexOnly;
     if (next) params.set('inPlexOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
+    else if (trackedOnly) params.set('trackedOnly', '1');
+    else if (newOnly) params.set('newOnly', '1');
+    else if (upcomingOnly) params.set('upcomingOnly', '1');
+    pushQuery(params);
+  });
+  document.getElementById('shows-tracked-toggle').addEventListener('click', () => {
+    const params = new URLSearchParams();
+    const next = !trackedOnly;
+    if (next) params.set('trackedOnly', '1');
+    else if (missingOnly) params.set('missingOnly', '1');
+    else if (inPlexOnly) params.set('inPlexOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
     pushQuery(params);
@@ -3674,6 +3995,7 @@ async function renderShowSeasons(showId) {
     if (next) params.set('newOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
+    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
     pushQuery(params);
   });
@@ -3683,6 +4005,7 @@ async function renderShowSeasons(showId) {
     if (next) params.set('upcomingOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
+    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
     pushQuery(params);
   });
@@ -3701,7 +4024,12 @@ async function renderShowSeasons(showId) {
     startShowEpisodePrefetch(showId, seasonNumbers);
   }
 
-  const seasons = [...data.items].sort((a, b) => {
+  const seasonsSource = trackedOnly ? data.items.filter((item) => Boolean(item?.tracked)) : data.items;
+  if (!seasonsSource.length) {
+    grid.innerHTML = '<div class="empty">No seasons found.</div>';
+    return;
+  }
+  const seasons = [...seasonsSource].sort((a, b) => {
     const aNo = Number(a.season_number) || 0;
     const bNo = Number(b.season_number) || 0;
     return aNo - bNo;
@@ -3734,7 +4062,7 @@ async function renderShowSeasons(showId) {
     const showSeasonDownload = !hideInPlexVisuals && (!showSeasonInPlex || hasMissing);
     const showSeasonPlex = showSeasonInPlex;
     const card = document.createElement('article');
-    card.className = `movie-card${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}${hideInPlexVisuals ? ' no-date' : ''}`;
+    card.className = `movie-card${season.tracked ? ' has-tracked' : ''}${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}${hideInPlexVisuals ? ' no-date' : ''}`;
     card.innerHTML = `
       <div class="poster-wrap">
         <img class="poster" src="${withImageCacheKey(season.poster_url) || SHOW_PLACEHOLDER}" alt="${season.name}" loading="lazy" />
@@ -3747,12 +4075,17 @@ async function renderShowSeasons(showId) {
         ` : ''}
         ${showSeasonInPlexCheck ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
         ${buildCardBadgeStrip({
+          showTrack: true,
+          trackMeta: {
+            kind: 'season',
+            showId: String(showId),
+            seasonNumber: Number(season.season_number),
+            active: Boolean(season.tracked),
+          },
           showPlex: showSeasonPlex,
           plexUrl: season.plex_web_url || '',
-          plexLabel: 'Open season in Plex',
           showDownload: showSeasonDownload,
           downloadUrl: seasonDownloadUrl,
-          downloadLabel: 'Download season search',
         })}
       </div>
       <div class="caption">
@@ -3768,6 +4101,16 @@ async function renderShowSeasons(showId) {
     card.querySelectorAll('.media-badges .badge-link').forEach((badgeLink) => {
       if (badgeLink.tagName === 'A') badgeLink.addEventListener('click', (event) => event.stopPropagation());
     });
+    const trackBtn = card.querySelector('.badge-track');
+    if (trackBtn) {
+      trackBtn.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        await handleTrackBadgeToggle(trackBtn, (nextTracked) => {
+          season.tracked = nextTracked;
+          renderShowSeasons(showId);
+        });
+      });
+    }
     card.addEventListener('click', () => {
       history.pushState({}, '', `/shows/${showId}/seasons/${season.season_number}`);
       handleLocation();
@@ -3782,6 +4125,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
   const inPlexOnly = search.get('inPlexOnly') === '1';
   const newOnly = search.get('newOnly') === '1';
   const upcomingOnly = search.get('upcomingOnly') === '1';
+  const trackedOnly = search.get('trackedOnly') === '1';
   const episodesSortDir = state.showsEpisodesSortDir === 'desc' ? 'desc' : 'asc';
   const cachedData = getCachedShowEpisodesData(showId, seasonNumber, missingOnly, inPlexOnly, newOnly, upcomingOnly);
   if (!cachedData) {
@@ -3822,6 +4166,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
         <button id="episodes-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${episodesSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
         <button id="episodes-in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="episodes-missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
+        <button id="episodes-tracked-toggle" class="toggle-btn has-pill-tooltip ${trackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
         <button id="episodes-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="episodes-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
       </div>
@@ -3848,6 +4193,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
     const next = !missingOnly;
     if (next) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
+    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
     pushQuery(params);
@@ -3857,6 +4203,17 @@ async function renderShowEpisodes(showId, seasonNumber) {
     const next = !inPlexOnly;
     if (next) params.set('inPlexOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
+    else if (trackedOnly) params.set('trackedOnly', '1');
+    else if (newOnly) params.set('newOnly', '1');
+    else if (upcomingOnly) params.set('upcomingOnly', '1');
+    pushQuery(params);
+  });
+  document.getElementById('episodes-tracked-toggle').addEventListener('click', () => {
+    const params = new URLSearchParams();
+    const next = !trackedOnly;
+    if (next) params.set('trackedOnly', '1');
+    else if (missingOnly) params.set('missingOnly', '1');
+    else if (inPlexOnly) params.set('inPlexOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
     pushQuery(params);
@@ -3867,6 +4224,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
     if (next) params.set('newOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
+    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
     pushQuery(params);
   });
@@ -3876,6 +4234,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
     if (next) params.set('upcomingOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
+    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
     pushQuery(params);
   });
@@ -3885,7 +4244,12 @@ async function renderShowEpisodes(showId, seasonNumber) {
     grid.innerHTML = '<div class="empty">No episodes found.</div>';
     return;
   }
-  const episodes = [...data.items].sort((a, b) => {
+  const episodesSource = trackedOnly ? data.items.filter((item) => Boolean(item?.tracked)) : data.items;
+  if (!episodesSource.length) {
+    grid.innerHTML = '<div class="empty">No episodes found.</div>';
+    return;
+  }
+  const episodes = [...episodesSource].sort((a, b) => {
     const aNo = Number(a.episode_number) || 0;
     const bNo = Number(b.episode_number) || 0;
     return aNo - bNo;
@@ -3910,7 +4274,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
       ? `https://www.themoviedb.org/tv/${data.show.tmdb_show_id}/season/${seasonNumber}/episode/${episode.episode_number}`
       : null;
     const card = document.createElement('article');
-    card.className = `movie-card${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}`;
+    card.className = `movie-card${episode.tracked ? ' has-tracked' : ''}${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}`;
     const renderEpisodeStatusBadges = (status) => {
       const badgeNew = status === 'new';
       const badgeUpcoming = status === 'upcoming';
@@ -3931,12 +4295,18 @@ async function renderShowEpisodes(showId, seasonNumber) {
         ${renderEpisodeStatusBadges(episode.status)}
         ${episode.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
         ${buildCardBadgeStrip({
+          showTrack: true,
+          trackMeta: {
+            kind: 'episode',
+            showId: String(showId),
+            seasonNumber: Number(seasonNumber),
+            episodeNumber: Number(episode.episode_number),
+            active: Boolean(episode.tracked),
+          },
           showPlex: Boolean(episode.in_plex),
           plexUrl: episode.plex_web_url || '',
-          plexLabel: 'Open episode in Plex',
           showDownload: showEpisodeDownload,
           downloadUrl: episodeDownloadUrl,
-          downloadLabel: 'Download episode search',
         })}
       </div>
       <div class="caption">
@@ -3947,6 +4317,16 @@ async function renderShowEpisodes(showId, seasonNumber) {
     card.querySelectorAll('.media-badges .badge-link').forEach((badgeLink) => {
       if (badgeLink.tagName === 'A') badgeLink.addEventListener('click', (event) => event.stopPropagation());
     });
+    const trackBtn = card.querySelector('.badge-track');
+    if (trackBtn) {
+      trackBtn.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        await handleTrackBadgeToggle(trackBtn, (nextTracked) => {
+          episode.tracked = nextTracked;
+          renderShowEpisodes(showId, seasonNumber);
+        });
+      });
+    }
     const ignoreToggleBtn = card.querySelector('.ignore-toggle-btn');
     if (ignoreToggleBtn) {
       ignoreToggleBtn.addEventListener('click', async (event) => {
@@ -3991,6 +4371,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
           const shouldHideInCurrentFilter = (
             (missingOnly && !(nextStatus === 'missing' || nextStatus === 'new'))
             || (inPlexOnly && !episode.in_plex)
+            || (trackedOnly && !episode.tracked)
             || (newOnly && nextStatus !== 'new')
             || (upcomingOnly && nextStatus !== 'upcoming')
           );
@@ -4027,6 +4408,7 @@ async function renderActorDetail(actorId) {
   const inPlexOnly = search.get('inPlexOnly') === '1';
   const newOnly = search.get('newOnly') === '1';
   const upcomingOnly = search.get('upcomingOnly') === '1';
+  const trackedOnly = search.get('trackedOnly') === '1';
   const defaultMoviesSortBy = localStorage.getItem('moviesSortBy') || 'date';
   const defaultMoviesSortDir = localStorage.getItem('moviesSortDir') || 'desc';
   const rawSortBy = search.get('sortBy') || defaultMoviesSortBy;
@@ -4070,6 +4452,7 @@ async function renderActorDetail(actorId) {
         <button id="movies-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${sortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
         <button id="in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
+        <button id="movies-tracked-toggle" class="toggle-btn has-pill-tooltip ${trackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
         <button id="movies-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="movies-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New">NEW</button>
       </div>
@@ -4114,6 +4497,7 @@ async function renderActorDetail(actorId) {
       const next = !missingOnly;
       if (next) params.set('missingOnly', '1');
       else if (inPlexOnly) params.set('inPlexOnly', '1');
+      else if (trackedOnly) params.set('trackedOnly', '1');
       else if (newOnly) params.set('newOnly', '1');
       else if (upcomingOnly) params.set('upcomingOnly', '1');
       params.set('sortBy', sortBy);
@@ -4129,6 +4513,22 @@ async function renderActorDetail(actorId) {
       const next = !inPlexOnly;
       if (next) params.set('inPlexOnly', '1');
       else if (missingOnly) params.set('missingOnly', '1');
+      else if (trackedOnly) params.set('trackedOnly', '1');
+      else if (newOnly) params.set('newOnly', '1');
+      else if (upcomingOnly) params.set('upcomingOnly', '1');
+      params.set('sortBy', sortBy);
+      params.set('sortDir', sortDir);
+      pushActorDetailQuery(params);
+    });
+  }
+  const moviesTrackedToggle = document.getElementById('movies-tracked-toggle');
+  if (moviesTrackedToggle) {
+    moviesTrackedToggle.addEventListener('click', () => {
+      const params = new URLSearchParams();
+      const next = !trackedOnly;
+      if (next) params.set('trackedOnly', '1');
+      else if (missingOnly) params.set('missingOnly', '1');
+      else if (inPlexOnly) params.set('inPlexOnly', '1');
       else if (newOnly) params.set('newOnly', '1');
       else if (upcomingOnly) params.set('upcomingOnly', '1');
       params.set('sortBy', sortBy);
@@ -4144,6 +4544,7 @@ async function renderActorDetail(actorId) {
       if (next) params.set('newOnly', '1');
       else if (missingOnly) params.set('missingOnly', '1');
       else if (inPlexOnly) params.set('inPlexOnly', '1');
+      else if (trackedOnly) params.set('trackedOnly', '1');
       else if (upcomingOnly) params.set('upcomingOnly', '1');
       params.set('sortBy', sortBy);
       params.set('sortDir', sortDir);
@@ -4158,6 +4559,7 @@ async function renderActorDetail(actorId) {
       if (next) params.set('upcomingOnly', '1');
       else if (missingOnly) params.set('missingOnly', '1');
       else if (inPlexOnly) params.set('inPlexOnly', '1');
+      else if (trackedOnly) params.set('trackedOnly', '1');
       else if (newOnly) params.set('newOnly', '1');
       params.set('sortBy', sortBy);
       params.set('sortDir', sortDir);
@@ -4280,6 +4682,7 @@ async function renderActorDetail(actorId) {
     const visible = query
       ? sortedMovies.filter((movie) => (movie.title || '').toLowerCase().includes(query))
       : filteredByInitial;
+    const scopedVisible = trackedOnly ? visible.filter((movie) => Boolean(movie.tracked)) : visible;
 
     for (const button of alphabetFilterEl.querySelectorAll('.alpha-btn')) {
       button.classList.remove('active');
@@ -4290,14 +4693,18 @@ async function renderActorDetail(actorId) {
     }
 
     grid.innerHTML = '';
-    for (const movie of visible) {
+    if (!scopedVisible.length) {
+      grid.innerHTML = '<div class="empty">No movies found.</div>';
+      return;
+    }
+    for (const movie of scopedVisible) {
       const card = document.createElement('article');
       const isNew = movie.status === 'new';
       const isUpcoming = movie.status === 'upcoming';
       const isIgnored = movie.status === 'ignored' || Boolean(movie.ignored);
       const isMissing = movie.status === 'missing' || movie.status === 'new';
       const isToggleableIgnore = movie.status === 'missing' || isIgnored;
-      card.className = `movie-card${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}${movie.release_date ? '' : ' no-date'}`;
+      card.className = `movie-card${movie.tracked ? ' has-tracked' : ''}${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}${movie.release_date ? '' : ' no-date'}`;
       const tmdbUrl = movie.tmdb_id ? `https://www.themoviedb.org/movie/${movie.tmdb_id}` : null;
       const downloadUrl = buildDownloadLink('movie', movie.title);
       const allowMovieDownload = Boolean(movie.release_date) && !isFutureDate(movie.release_date);
@@ -4323,12 +4730,16 @@ async function renderActorDetail(actorId) {
           ${renderMovieStatusBadges(movie.status)}
           ${movie.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
           ${buildCardBadgeStrip({
+            showTrack: true,
+            trackMeta: {
+              kind: 'movie',
+              tmdbMovieId: Number(movie.tmdb_id || 0),
+              active: Boolean(movie.tracked),
+            },
             showPlex: Boolean(movie.in_plex),
             plexUrl: movie.plex_web_url || '',
-            plexLabel: 'Open movie in Plex',
             showDownload: showMovieDownload,
             downloadUrl,
-            downloadLabel: 'Download movie search',
           })}
         </div>
         <div class="caption">
@@ -4342,6 +4753,16 @@ async function renderActorDetail(actorId) {
       card.querySelectorAll('.media-badges .badge-link').forEach((badgeLink) => {
         badgeLink.addEventListener('click', (event) => event.stopPropagation());
       });
+      const trackBtn = card.querySelector('.badge-track');
+      if (trackBtn) {
+        trackBtn.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          await handleTrackBadgeToggle(trackBtn, (nextTracked) => {
+            movie.tracked = nextTracked;
+            renderActorDetail(actorId);
+          });
+        });
+      }
       const ignoreToggleBtn = card.querySelector('.ignore-toggle-btn');
       if (ignoreToggleBtn) {
         ignoreToggleBtn.addEventListener('click', async (event) => {
@@ -4387,6 +4808,7 @@ async function renderActorDetail(actorId) {
             const shouldHideInCurrentFilter = (
               (missingOnly && !(nextStatus === 'missing' || nextStatus === 'new'))
               || (inPlexOnly && !movie.in_plex)
+              || (trackedOnly && !movie.tracked)
               || (newOnly && nextStatus !== 'new')
               || (upcomingOnly && nextStatus !== 'upcoming')
             );
