@@ -344,6 +344,7 @@ def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str,
                 role,
                 tmdb_person_id,
                 image_url,
+                plex_web_url,
                 movies_in_plex_count,
                 missing_movie_count,
                 missing_new_count,
@@ -372,6 +373,8 @@ def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str,
                 prepared['first_release_date'] = previous.get('first_release_date')
                 prepared['next_upcoming_release_date'] = previous.get('next_upcoming_release_date')
                 prepared['missing_scan_at'] = previous.get('missing_scan_at')
+                if not prepared.get('plex_web_url') and previous.get('plex_web_url'):
+                    prepared['plex_web_url'] = previous.get('plex_web_url')
             else:
                 prepared['movies_in_plex_count'] = None
                 prepared['missing_movie_count'] = None
@@ -380,6 +383,7 @@ def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str,
                 prepared['first_release_date'] = None
                 prepared['next_upcoming_release_date'] = None
                 prepared['missing_scan_at'] = None
+                prepared['plex_web_url'] = prepared.get('plex_web_url')
             prepared_actors.append(prepared)
 
         conn.execute('DELETE FROM actors')
@@ -394,6 +398,7 @@ def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str,
                 appearances,
                 tmdb_person_id,
                 image_url,
+                plex_web_url,
                 movies_in_plex_count,
                 missing_movie_count,
                 missing_new_count,
@@ -410,6 +415,7 @@ def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str,
                 :appearances,
                 :tmdb_person_id,
                 :image_url,
+                :plex_web_url,
                 :movies_in_plex_count,
                 :missing_movie_count,
                 :missing_new_count,
@@ -466,7 +472,7 @@ def _build_actor_movies_payload(
     now_dt = datetime.now(UTC)
     with get_conn() as conn:
         actor = conn.execute(
-            'SELECT actor_id, name, role, tmdb_person_id, image_url FROM actors WHERE actor_id = ?',
+            'SELECT actor_id, name, role, tmdb_person_id, image_url, plex_web_url FROM actors WHERE actor_id = ?',
             (actor_id,),
         ).fetchone()
         if not actor:
@@ -1788,6 +1794,7 @@ def actors(role: str = Query('actor')) -> dict[str, Any]:
                 appearances,
                 tmdb_person_id,
                 image_url,
+                plex_web_url,
                 movies_in_plex_count,
                 missing_movie_count,
                 missing_new_count,

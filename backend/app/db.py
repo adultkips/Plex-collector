@@ -33,6 +33,7 @@ def init_db() -> None:
                 first_release_date TEXT,
                 next_upcoming_release_date TEXT,
                 missing_scan_at TEXT,
+                plex_web_url TEXT,
                 updated_at TEXT NOT NULL
             )
             '''
@@ -163,6 +164,8 @@ def init_db() -> None:
             conn.execute('ALTER TABLE actors ADD COLUMN next_upcoming_release_date TEXT')
         if 'missing_scan_at' not in actor_columns:
             conn.execute('ALTER TABLE actors ADD COLUMN missing_scan_at TEXT')
+        if 'plex_web_url' not in actor_columns:
+            conn.execute('ALTER TABLE actors ADD COLUMN plex_web_url TEXT')
         conn.execute("UPDATE actors SET role = 'actor' WHERE role IS NULL OR TRIM(role) = ''")
         if 'original_title' not in columns:
             conn.execute('ALTER TABLE plex_movies ADD COLUMN original_title TEXT')

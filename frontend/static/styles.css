@@ -324,7 +324,7 @@ select.secondary-btn {
 }
 
 .actor-card, .movie-card {
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--surface);
@@ -375,8 +375,8 @@ select.secondary-btn {
 }
 
 .actor-card.has-upcoming {
-  border-color: #f59e0b;
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.34);
+  border-color: #ec4899;
+  box-shadow: 0 0 0 1px rgba(236, 72, 153, 0.34);
 }
 
 .actor-card.has-mismatch {
@@ -406,8 +406,8 @@ select.secondary-btn {
 }
 
 .movie-card.has-upcoming {
-  border-color: #f59e0b;
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.34);
+  border-color: #ec4899;
+  box-shadow: 0 0 0 1px rgba(236, 72, 153, 0.34);
 }
 
 .movie-card.has-mismatch {
@@ -424,6 +424,8 @@ select.secondary-btn {
   aspect-ratio: 2 / 3;
   object-fit: cover;
   background: #283141;
+  border-top-left-radius: 14px;
+  border-top-right-radius: 14px;
 }
 
 .poster-wrap {
@@ -577,10 +579,38 @@ body.is-scrolled .topbar {
   transition: transform 140ms ease;
 }
 
+.media-badges {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.badge-round {
+  margin-top: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  gap: 0;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.28);
+}
+
 .badge-download {
   background: #3b82f6;
   color: #eef6ff;
   border: 1px solid #60a5fa;
+}
+
+.badge-plex {
+  background: #171f2a;
+  color: #eef6ff;
+  border: 1px solid #3a4658;
 }
 
 .badge-icon {
@@ -612,26 +642,23 @@ body.is-scrolled .topbar {
   font-weight: 800;
 }
 
-.badge-link:hover {
-  transform: scale(1.07);
+.badge-round .badge-icon-download {
+  background: transparent;
+  color: #eef6ff;
 }
 
-.badge-overlay:hover {
-  transform: translateX(-50%) scale(1.07);
+.badge-round .badge-icon-download::before {
+  font-size: 13px;
+}
+
+.badge-link:hover {
+  transform: scale(1.07);
 }
 
 .badge-disabled {
   opacity: 0.45;
   cursor: default;
   pointer-events: none;
-}
-
-.badge-overlay {
-  position: absolute;
-  left: 50%;
-  bottom: 10px;
-  transform: translateX(-50%);
-  margin-top: 0;
 }
 
 .show-scan-pill {
@@ -709,6 +736,16 @@ body.is-scrolled .topbar {
   margin-left: 2px;
 }
 
+.badge-logo-round {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 999px;
+  margin-left: 0;
+  vertical-align: middle;
+  display: block;
+}
+
 .missing-badge {
   position: absolute;
   top: 10px;
@@ -777,9 +814,9 @@ body.is-scrolled .topbar {
   background: #3b82f6;
   color: #ffffff;
   font-weight: 800;
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1;
-  padding: 5px 8px;
+  padding: 6px 8px;
   border: 1px solid #60a5fa;
   box-shadow: 0 6px 16px rgba(30, 64, 175, 0.45);
   z-index: 2;
@@ -791,13 +828,13 @@ body.is-scrolled .topbar {
   top: 10px;
   right: 10px;
   border-radius: 999px;
-  background: #f59e0b;
-  color: #111111;
+  background: #ec4899;
+  color: #ffffff;
   font-weight: 800;
   line-height: 1;
-  padding: 4px 7px;
-  border: 1px solid #fbbf24;
-  box-shadow: 0 6px 16px rgba(133, 77, 14, 0.45);
+  padding: 5px;
+  border: 1px solid #ec4899;
+  box-shadow: 0 6px 16px rgba(157, 23, 77, 0.45);
   z-index: 2;
   pointer-events: none;
   display: inline-grid;
@@ -861,8 +898,8 @@ body.is-scrolled .topbar {
 
 .upcoming-badge-icon svg,
 .calendar-filter-icon svg {
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
   fill: currentColor;
 }
 

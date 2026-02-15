@@ -4,7 +4,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, UTC
 from typing import Any
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urlparse, urlunparse
 import xml.etree.ElementTree as ET
 
 import requests
@@ -74,6 +74,49 @@ def _normalize_actor_thumb(thumb: str | None) -> str | None:
     if thumb.startswith('http://') or thumb.startswith('https://'):
         return thumb
     return proxied_thumb_url(thumb)
+
+
+def _build_cast_plex_web_url(
+    server_client_identifier: str | None,
+    section_key: str | None,
+    cast_role: str,
+    role_node: ET.Element,
+) -> str | None:
+    if not server_client_identifier:
+        return None
+    tag_key = str(role_node.attrib.get('tagKey') or '').strip()
+    if tag_key:
+        people_path = tag_key if tag_key.startswith('/library/people/') else f'/library/people/{tag_key}'
+        return (
+            'https://app.plex.tv/desktop#!/provider/tv.plex.provider.discover/details'
+            f'?key={quote(people_path, safe="")}'
+        )
+
+    if not section_key:
+        return None
+    if cast_role == 'director':
+        role_param = 'director'
+    elif cast_role == 'writer':
+        role_param = 'writer'
+    else:
+        role_param = 'actor'
+    person_id = str(role_node.attrib.get('id') or '').strip()
+    if not person_id.isdigit():
+        legacy_tag_key = str(role_node.attrib.get('tagKey') or '').strip()
+        if legacy_tag_key:
+            parsed = urlparse(legacy_tag_key)
+            query = parse_qs(parsed.query)
+            person_values = query.get(role_param) or []
+            if person_values:
+                candidate = str(person_values[0]).strip()
+                if candidate.isdigit():
+                    person_id = candidate
+    if not person_id.isdigit():
+        return None
+    return (
+        'https://app.plex.tv/desktop#!/server/'
+        f'{server_client_identifier}/library/sections/{section_key}/all?type=1&{role_param}={person_id}'
+    )
 
 
 def _plex_headers(token: str | None = None) -> dict[str, str]:
@@ -449,6 +492,12 @@ def fetch_movie_library_snapshot(
                             'name': person_name,
                             'role': cast_role,
                             'image_url': _normalize_actor_thumb(node.attrib.get('thumb')),
+                            'plex_web_url': _build_cast_plex_web_url(
+                                server_client_identifier,
+                                section_key,
+                                cast_role,
+                                node,
+                            ),
                         }
 
     # Count actor appearances from full movie metadata (not section listing),
@@ -495,6 +544,13 @@ def fetch_movie_library_snapshot(
                         thumb_url = _normalize_actor_thumb(node.attrib.get('thumb'))
                         if thumb_url and not cast_by_key[key].get('image_url'):
                             cast_by_key[key]['image_url'] = thumb_url
+                        if not cast_by_key[key].get('plex_web_url'):
+                            cast_by_key[key]['plex_web_url'] = _build_cast_plex_web_url(
+                                server_client_identifier,
+                                movie_ref.get('library_section_id'),
+                                cast_role,
+                                node,
+                            )
 
     now = datetime.now(UTC).isoformat()
     actors = []
@@ -507,6 +563,7 @@ def fetch_movie_library_snapshot(
                 'role': base['role'],
                 'appearances': count,
                 'image_url': base['image_url'],
+                'plex_web_url': base.get('plex_web_url'),
                 'updated_at': now,
             }
         )

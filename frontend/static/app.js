@@ -678,6 +678,41 @@ function buildDownloadLink(type, rawText) {
   return `${start}${keyword}${end}`;
 }
 
+function buildRoundPlexBadge(plexUrl) {
+  const label = 'Open Plex';
+  const logo = plexLogoTag('badge-logo badge-logo-round');
+  if (plexUrl) {
+    return `<a class="badge-link badge-round badge-plex has-pill-tooltip" href="${plexUrl}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}">${logo}</a>`;
+  }
+  return `<span class="badge-link badge-round badge-plex badge-disabled has-pill-tooltip" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}">${logo}</span>`;
+}
+
+function buildRoundDownloadBadge(downloadUrl) {
+  const label = 'Download';
+  if (downloadUrl) {
+    return `<a class="badge-link badge-round badge-download has-pill-tooltip" href="${downloadUrl}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}"><span class="badge-icon badge-icon-download">&#8595;</span></a>`;
+  }
+  return `<span class="badge-link badge-round badge-download badge-disabled has-pill-tooltip" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}"><span class="badge-icon badge-icon-download">&#8595;</span></span>`;
+}
+
+function buildCardBadgeStrip(options) {
+  const {
+    showPlex = false,
+    plexUrl = '',
+    showDownload = false,
+    downloadUrl = '',
+  } = options || {};
+  const badges = [];
+  if (showPlex) {
+    badges.push(buildRoundPlexBadge(plexUrl));
+  }
+  if (showDownload) {
+    badges.push(buildRoundDownloadBadge(downloadUrl));
+  }
+  if (!badges.length) return '';
+  return `<div class="media-badges">${badges.join('')}</div>`;
+}
+
 function buildDownloadExampleText(type, settings) {
   const isActor = type === 'actor';
   const isShow = type === 'show';
@@ -946,6 +981,10 @@ async function handleLocation() {
     history.replaceState({}, '', `${nextPath}${window.location.search || ''}`);
     handleLocation();
     return;
+  }
+  if (!path.startsWith('/cast/')) {
+    state.moviesSearchOpen = false;
+    state.moviesSearchQuery = '';
   }
   document.body.classList.remove('calendar-view');
 
@@ -2082,6 +2121,19 @@ function showScanSuccessModal(message = 'Scan complete', showConfirm = false) {
   }
 }
 
+function showScanErrorModal(message = 'Scan failed', showConfirm = true) {
+  const iconWrap = document.getElementById('scan-icon-wrap');
+  const msg = document.getElementById('scan-modal-msg');
+  const okBtn = document.getElementById('scan-modal-ok');
+  if (!iconWrap) return;
+  iconWrap.innerHTML = '<div class="scan-check" style="color:#ef4444;">!</div>';
+  if (msg) msg.textContent = message;
+  if (okBtn) {
+    okBtn.classList.toggle('hidden', !showConfirm);
+    if (showConfirm) okBtn.focus();
+  }
+}
+
 function closeScanModal() {
   const modal = document.getElementById('scan-modal');
   if (modal) modal.remove();
@@ -2224,7 +2276,7 @@ async function runScan() {
     renderScanLogs(result.scan_logs || [], showLogs);
     showScanSuccessModal('Scan complete', true);
   } catch (error) {
-    closeScanModal();
+    showScanErrorModal(error?.message || 'Scan failed', true);
   }
 }
 
@@ -2270,7 +2322,7 @@ async function runShowScan() {
     const actorLogs = state.profile?.scan_logs || [];
     renderScanLogs(actorLogs, result.show_scan_logs || []);
   } catch (error) {
-    closeScanModal();
+    showScanErrorModal(error?.message || 'Scan failed', true);
   }
 }
 
@@ -2698,9 +2750,6 @@ async function renderActors(enableBackgroundRefresh = true) {
     const itemsToRender = incremental ? renderItems.slice(alreadyRendered) : renderItems;
     for (const actor of itemsToRender) {
       const downloadUrl = buildDownloadLink('actor', actor.name);
-      const actorDownloadBadge = downloadUrl
-        ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">&#8595;</span></a>`
-        : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">&#8595;</span></span>`;
       const actorImage = withImageCacheKey(actor.image_url) || ACTOR_PLACEHOLDER;
       const newCount = Number.isFinite(Number(actor.missing_new_count)) ? Number(actor.missing_new_count) : 0;
       const missingCount = Number.isFinite(Number(actor.missing_movie_count)) ? Number(actor.missing_movie_count) : 0;
@@ -2734,9 +2783,14 @@ async function renderActors(enableBackgroundRefresh = true) {
             </div>
           ` : ''}
           ${isInPlex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
-          ${isInPlex
-            ? '<span class="badge-link badge-overlay">Plex ' + plexLogoTag() + '</span>'
-            : actorDownloadBadge}
+          ${buildCardBadgeStrip({
+            showPlex: true,
+            plexUrl: actor.plex_web_url || '',
+            plexLabel: 'Open cast in Plex',
+            showDownload: true,
+            downloadUrl,
+            downloadLabel: 'Download cast search',
+          })}
         </div>
         <div class="caption">
           <div class="name">${actor.name}</div>
@@ -2753,9 +2807,8 @@ async function renderActors(enableBackgroundRefresh = true) {
       } else {
         poster.src = actorImage;
       }
-      const downloadLink = card.querySelector('.badge-link');
-      downloadLink.addEventListener('click', (event) => {
-        event.stopPropagation();
+      card.querySelectorAll('.media-badges .badge-link').forEach((badgeLink) => {
+        badgeLink.addEventListener('click', (event) => event.stopPropagation());
       });
       const scanPillBtn = card.querySelector('.show-scan-pill');
       scanPillBtn.addEventListener('click', async (event) => {
@@ -3170,11 +3223,6 @@ async function renderShows(enableBackgroundRefresh = true) {
       const nextAirDateText = nextAirDate ? formatDateDdMmYyyy(nextAirDate) : null;
       const totalMissingInclNew = Math.max(0, oldCount + newCount);
       const releasedText = formatReleasedDate(null, show.year);
-      const showStatusBadge = hasNoMissing && show.plex_web_url
-        ? `<a class="badge-link badge-overlay" href="${show.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
-        : downloadUrl
-          ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">&#8595;</span></a>`
-          : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">&#8595;</span></span>`;
       const showImage = withImageCacheKey(show.image_url) || SHOW_PLACEHOLDER;
       const card = document.createElement('article');
       card.className = `actor-card${isNew ? ' has-new' : (hasMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}`;
@@ -3197,7 +3245,14 @@ async function renderShows(enableBackgroundRefresh = true) {
             </div>
           ` : ''}
           ${hasNoMissing ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
-          ${showStatusBadge}
+          ${buildCardBadgeStrip({
+            showPlex: true,
+            plexUrl: show.plex_web_url || '',
+            plexLabel: 'Open show in Plex',
+            showDownload: true,
+            downloadUrl,
+            downloadLabel: 'Download show search',
+          })}
         </div>
         <div class="caption">
           <div class="name">${show.title}</div>
@@ -3211,8 +3266,9 @@ async function renderShows(enableBackgroundRefresh = true) {
       const poster = card.querySelector('.poster');
       applyImageFallback(poster, SHOW_PLACEHOLDER);
       state.showsImageQueue.push({ img: poster, src: showImage });
-      const downloadLink = card.querySelector('.badge-link');
-      downloadLink.addEventListener('click', (event) => event.stopPropagation());
+      card.querySelectorAll('.media-badges .badge-link').forEach((badgeLink) => {
+        badgeLink.addEventListener('click', (event) => event.stopPropagation());
+      });
       const scanPillBtn = card.querySelector('.show-scan-pill');
       scanPillBtn.addEventListener('click', async (event) => {
         event.stopPropagation();
@@ -3670,16 +3726,13 @@ async function renderShowSeasons(showId) {
       ? seasonYearFromRelease
       : (Number.isFinite(Number(season.year)) ? Number(season.year) : null);
     const hideInPlexVisuals = seasonYear === 0 && seasonEpisodesInPlex === 0;
-    const showSeasonInPlex = Boolean(season.in_plex) && !hideInPlexVisuals;
+    const showSeasonInPlex = !hideInPlexVisuals
+      && (Boolean(season.in_plex) || seasonEpisodesInPlex > 0);
+    const showSeasonInPlexCheck = showSeasonInPlex && !hasMissing && !hasNew && !hasUpcoming;
     const seasonNextUpcoming = season.next_upcoming_air_date ? formatDateDdMmYyyy(season.next_upcoming_air_date) : null;
     const seasonMissingInclNew = Math.max(0, seasonOldCount + seasonNewCount);
-    const seasonDownloadBadge = hideInPlexVisuals
-      ? ''
-      : (
-        seasonDownloadUrl
-          ? `<a class="badge-link badge-overlay badge-download" href="${seasonDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">&#8595;</span></a>`
-          : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">&#8595;</span></span>'
-      );
+    const showSeasonDownload = !hideInPlexVisuals && (!showSeasonInPlex || hasMissing);
+    const showSeasonPlex = showSeasonInPlex;
     const card = document.createElement('article');
     card.className = `movie-card${isNew ? ' has-new' : (isMissing ? ' has-missing' : (isUpcoming ? ' has-upcoming' : ''))}${hideInPlexVisuals ? ' no-date' : ''}`;
     card.innerHTML = `
@@ -3692,16 +3745,15 @@ async function renderShowSeasons(showId) {
             ${hasMissing ? '<span class="missing-badge" title="Missing in Plex" aria-label="Missing in Plex">!</span>' : ''}
           </div>
         ` : ''}
-        ${showSeasonInPlex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
-        ${
-          showSeasonInPlex
-            ? (
-              season.plex_web_url
-                ? `<a class="badge-link badge-overlay" href="${season.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
-                : `<span class="badge-link badge-overlay">Plex ${plexLogoTag()}</span>`
-            )
-            : seasonDownloadBadge
-        }
+        ${showSeasonInPlexCheck ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
+        ${buildCardBadgeStrip({
+          showPlex: showSeasonPlex,
+          plexUrl: season.plex_web_url || '',
+          plexLabel: 'Open season in Plex',
+          showDownload: showSeasonDownload,
+          downloadUrl: seasonDownloadUrl,
+          downloadLabel: 'Download season search',
+        })}
       </div>
       <div class="caption">
         <div class="name">${season.name}</div>
@@ -3713,8 +3765,9 @@ async function renderShowSeasons(showId) {
       </div>
     `;
     applyImageFallback(card.querySelector('.poster'), SHOW_PLACEHOLDER);
-    const badge = card.querySelector('.badge-overlay');
-    if (badge && badge.tagName === 'A') badge.addEventListener('click', (event) => event.stopPropagation());
+    card.querySelectorAll('.media-badges .badge-link').forEach((badgeLink) => {
+      if (badgeLink.tagName === 'A') badgeLink.addEventListener('click', (event) => event.stopPropagation());
+    });
     card.addEventListener('click', () => {
       history.pushState({}, '', `/shows/${showId}/seasons/${season.season_number}`);
       handleLocation();
@@ -3845,13 +3898,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
       buildEpisodeKeyword(data.show.title, seasonNumber, episode.episode_number),
     );
     const allowEpisodeDownload = Boolean(episode.air_date) && !isFutureDate(episode.air_date);
-    const episodeDownloadBadge = allowEpisodeDownload
-      ? (
-        episodeDownloadUrl
-          ? `<a class="badge-link badge-overlay badge-download" href="${episodeDownloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">&#8595;</span></a>`
-          : '<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">&#8595;</span></span>'
-      )
-      : '';
+    const showEpisodeDownload = !episode.in_plex && allowEpisodeDownload;
     const isUpcoming = episode.status === 'upcoming';
     const isNew = episode.status === 'new';
     const isIgnored = episode.status === 'ignored' || Boolean(episode.ignored);
@@ -3883,19 +3930,23 @@ async function renderShowEpisodes(showId, seasonNumber) {
         <img class="poster" src="${withImageCacheKey(episode.poster_url) || SHOW_PLACEHOLDER}" alt="${episode.title}" loading="lazy" />
         ${renderEpisodeStatusBadges(episode.status)}
         ${episode.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
-        ${
-          episode.in_plex
-            ? `<a class="badge-link badge-overlay" href="${episode.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
-            : episodeDownloadBadge
-        }
+        ${buildCardBadgeStrip({
+          showPlex: Boolean(episode.in_plex),
+          plexUrl: episode.plex_web_url || '',
+          plexLabel: 'Open episode in Plex',
+          showDownload: showEpisodeDownload,
+          downloadUrl: episodeDownloadUrl,
+          downloadLabel: 'Download episode search',
+        })}
       </div>
       <div class="caption">
         <div class="name">E${String(episode.episode_number).padStart(2, '0')} - ${episode.title}</div>
         ${episodeReleaseLabel ? `<div class="year">${episodeReleaseLabel}</div>` : ''}
       </div>
     `;
-    const badge = card.querySelector('.badge-overlay');
-    if (badge && badge.tagName === 'A') badge.addEventListener('click', (event) => event.stopPropagation());
+    card.querySelectorAll('.media-badges .badge-link').forEach((badgeLink) => {
+      if (badgeLink.tagName === 'A') badgeLink.addEventListener('click', (event) => event.stopPropagation());
+    });
     const ignoreToggleBtn = card.querySelector('.ignore-toggle-btn');
     if (ignoreToggleBtn) {
       ignoreToggleBtn.addEventListener('click', async (event) => {
@@ -4250,13 +4301,7 @@ async function renderActorDetail(actorId) {
       const tmdbUrl = movie.tmdb_id ? `https://www.themoviedb.org/movie/${movie.tmdb_id}` : null;
       const downloadUrl = buildDownloadLink('movie', movie.title);
       const allowMovieDownload = Boolean(movie.release_date) && !isFutureDate(movie.release_date);
-      const movieDownloadBadge = allowMovieDownload
-        ? (
-          downloadUrl
-            ? `<a class="badge-link badge-overlay badge-download" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">&#8595;</span></a>`
-            : `<span class="badge-link badge-overlay badge-download badge-disabled">Download <span class="badge-icon badge-icon-download">&#8595;</span></span>`
-        )
-        : '';
+      const showMovieDownload = !movie.in_plex && allowMovieDownload;
       const releaseLabel = movie.release_date ? formatDateDdMmYyyy(movie.release_date) : 'No date';
       const renderMovieStatusBadges = (status) => {
         const badgeNew = status === 'new';
@@ -4277,11 +4322,14 @@ async function renderActorDetail(actorId) {
           <img class="poster" src="${withImageCacheKey(movie.poster_url) || MOVIE_PLACEHOLDER}" alt="${movie.title}" loading="lazy" />
           ${renderMovieStatusBadges(movie.status)}
           ${movie.in_plex ? '<span class="in-plex-badge" title="In Plex" aria-label="In Plex">&#10003;</span>' : ''}
-          ${
-            movie.in_plex
-              ? `<a class="badge-link badge-overlay" href="${movie.plex_web_url}" target="_blank" rel="noopener noreferrer">Plex ${plexLogoTag()}</a>`
-              : movieDownloadBadge
-          }
+          ${buildCardBadgeStrip({
+            showPlex: Boolean(movie.in_plex),
+            plexUrl: movie.plex_web_url || '',
+            plexLabel: 'Open movie in Plex',
+            showDownload: showMovieDownload,
+            downloadUrl,
+            downloadLabel: 'Download movie search',
+          })}
         </div>
         <div class="caption">
           <div class="name">${movie.title}</div>
@@ -4291,10 +4339,9 @@ async function renderActorDetail(actorId) {
       if (tmdbUrl) {
         card.addEventListener('click', () => window.open(tmdbUrl, '_blank', 'noopener,noreferrer'));
       }
-      const badge = card.querySelector('.badge-overlay');
-      if (badge) {
-        badge.addEventListener('click', (event) => event.stopPropagation());
-      }
+      card.querySelectorAll('.media-badges .badge-link').forEach((badgeLink) => {
+        badgeLink.addEventListener('click', (event) => event.stopPropagation());
+      });
       const ignoreToggleBtn = card.querySelector('.ignore-toggle-btn');
       if (ignoreToggleBtn) {
         ignoreToggleBtn.addEventListener('click', async (event) => {
