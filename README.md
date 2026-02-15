@@ -37,7 +37,7 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
   - Clickable TMDb movie cards and Plex/deep-link badges.
   - Visual status badges and borders for `In Plex`, `Missing`, `Upcoming` and `NEW`.
   - Direct movie download badge support via configurable prefix links.
-  - `Create Collection` action to build/update Plex collections from in-library matches.
+  - `Create Collection` action to build/update Plex collections from in-library matches or as a smart collection.
 - Shows experience:
   - Large poster grid sourced from Plex.
   - A-Z/All filtering and live search.

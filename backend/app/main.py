@@ -25,6 +25,7 @@ from .plex_client import (
     candidate_server_uris,
     check_pin,
     choose_preferred_server,
+    create_smart_collection_for_person,
     fetch_movie_library_snapshot,
     fetch_show_library_snapshot,
     get_account_profile,
@@ -97,6 +98,12 @@ class DownloadPrefixPayload(BaseModel):
 class CreateCollectionPayload(BaseModel):
     actor_id: str
     collection_name: str | None = None
+
+
+class CreateSmartCollectionPayload(BaseModel):
+    actor_id: str
+    collection_name: str | None = None
+    role: str | None = None
 
 
 class ShowMissingScanPayload(BaseModel):
@@ -1970,6 +1977,130 @@ def create_collection_from_actor(payload: CreateCollectionPayload) -> dict[str, 
         'status': status,
         'collection_name': collection_name,
         'requested': len(in_plex_items),
+        'updated': total_updated,
+        'unchanged': total_unchanged,
+        'sections': sections_result,
+    }
+
+
+@app.post('/api/collections/create-smart-from-actor')
+def create_smart_collection_from_actor(payload: CreateSmartCollectionPayload) -> dict[str, Any]:
+    _, server = ensure_auth()
+    with get_conn() as conn:
+        actor_row = conn.execute(
+            '''
+            SELECT actor_id, name, role
+            FROM actors
+            WHERE actor_id = ?
+            ''',
+            (payload.actor_id,),
+        ).fetchone()
+    if not actor_row:
+        raise HTTPException(status_code=404, detail='Cast item not found')
+
+    actor_name = str(actor_row['name'] or '').strip()
+    actor_role = str(actor_row['role'] or 'actor').strip().lower() or 'actor'
+    role = str(payload.role or actor_role).strip().lower() or actor_role
+    if role not in {'actor', 'director', 'writer'}:
+        raise HTTPException(status_code=400, detail='Invalid smart collection role')
+
+    collection_name = (payload.collection_name or actor_name).strip()
+    if not collection_name:
+        raise HTTPException(status_code=400, detail='Collection name cannot be empty')
+
+    actor_payload = _build_actor_movies_payload(payload.actor_id, False, True, False, False)
+    in_plex_items = [
+        item for item in actor_payload['items']
+        if item.get('in_plex') and item.get('library_section_id')
+    ]
+    section_ids = sorted({str(item['library_section_id']) for item in in_plex_items if item.get('library_section_id')})
+    if not section_ids:
+        with get_conn() as conn:
+            fallback_rows = conn.execute(
+                '''
+                SELECT DISTINCT library_section_id
+                FROM plex_movies
+                WHERE library_section_id IS NOT NULL
+                '''
+            ).fetchall()
+        section_ids = sorted({str(row['library_section_id']) for row in fallback_rows if row['library_section_id'] is not None})
+
+    if not section_ids:
+        return {
+            'ok': True,
+            'collection_name': collection_name,
+            'requested': 0,
+            'updated': 0,
+            'unchanged': 0,
+            'sections': [],
+            'detail': 'Could not resolve Plex movie sections for smart collection.',
+        }
+
+    uris_to_try = candidate_server_uris(server)
+    client_identifier = str(server.get('client_identifier') or '').strip()
+    if not client_identifier:
+        raise HTTPException(status_code=400, detail='Missing Plex server client identifier')
+
+    sections_result: list[dict[str, Any]] = []
+    total_updated = 0
+    total_unchanged = 0
+    for section_id in section_ids:
+        section_error: Exception | None = None
+        applied: dict[str, Any] | None = None
+        for uri in uris_to_try:
+            try:
+                applied = create_smart_collection_for_person(
+                    uri,
+                    server['token'],
+                    client_identifier,
+                    section_id,
+                    collection_name,
+                    role,
+                    actor_name,
+                )
+                if server.get('uri') != uri:
+                    server['uri'] = uri
+                    set_setting('server', server)
+                break
+            except (RequestsConnectionError, RequestException, ParseError) as exc:
+                section_error = exc
+                continue
+        if applied is None:
+            sections_result.append(
+                {
+                    'section_id': section_id,
+                    'requested': 1,
+                    'updated': 0,
+                    'unchanged': 0,
+                    'error': str(section_error) if section_error else 'Unknown Plex error',
+                }
+            )
+            continue
+        total_updated += int(applied.get('updated', 0))
+        total_unchanged += int(applied.get('unchanged', 0))
+        sections_result.append(
+            {
+                'section_id': section_id,
+                'requested': 1,
+                'updated': int(applied.get('updated', 0)),
+                'unchanged': int(applied.get('unchanged', 0)),
+                'error': None,
+            }
+        )
+
+    errors = [section for section in sections_result if section.get('error')]
+    status = 'partial' if errors and total_updated > 0 else ('failed' if errors else 'success')
+    if status == 'failed':
+        raise HTTPException(
+            status_code=502,
+            detail='Could not create smart collection on Plex. Check server connection and metadata edit permissions.',
+        )
+    return {
+        'ok': True,
+        'status': status,
+        'collection_name': collection_name,
+        'role': role,
+        'requested': len(section_ids),
         'updated': total_updated,
         'unchanged': total_unchanged,
         'sections': sections_result,

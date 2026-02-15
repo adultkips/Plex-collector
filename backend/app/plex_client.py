@@ -336,6 +336,32 @@ def _server_put(uri: str, token: str, path: str, params: dict[str, Any] | None =
         response.raise_for_status()
 
 
+def _server_post(uri: str, token: str, path: str, params: dict[str, Any] | None = None) -> None:
+    target = f"{uri}{path}"
+    headers = _plex_headers(token)
+    headers['Accept'] = 'application/xml'
+    try:
+        response = requests.post(
+            target,
+            headers=headers,
+            params=params,
+            timeout=(6, 90),
+        )
+        response.raise_for_status()
+    except RequestsConnectionError:
+        fallback_base = _fallback_uri_from_plex_direct(uri)
+        if not fallback_base:
+            raise
+        fallback_target = f"{fallback_base}{path}"
+        response = requests.post(
+            fallback_target,
+            headers=headers,
+            params=params,
+            timeout=(6, 90),
+        )
+        response.raise_for_status()
+
+
 def fetch_movie_library_snapshot(
     server_uri: str,
     server_token: str,
@@ -552,6 +578,56 @@ def append_collection_to_movies(
         updated += 1
 
     return {'updated': updated, 'unchanged': unchanged}
+
+
+def create_smart_collection_for_person(
+    server_uri: str,
+    server_token: str,
+    server_client_identifier: str,
+    section_id: str,
+    collection_name: str,
+    role: str,
+    person_name: str,
+) -> dict[str, int]:
+    collection_name = collection_name.strip()
+    if not collection_name:
+        return {'updated': 0, 'unchanged': 0}
+    role_key = (role or '').strip().lower()
+    if role_key not in {'actor', 'director', 'writer'}:
+        return {'updated': 0, 'unchanged': 0}
+    person_name = person_name.strip()
+    if not person_name:
+        return {'updated': 0, 'unchanged': 0}
+
+    # Avoid duplicate smart collections with same title in section.
+    existing_root = _server_get(
+        server_uri,
+        server_token,
+        f'/library/sections/{section_id}/all',
+        params={'type': 18},
+    )
+    for directory in existing_root.findall('Directory'):
+        title = str(directory.attrib.get('title') or '').strip()
+        if title.lower() == collection_name.lower():
+            return {'updated': 0, 'unchanged': 1}
+
+    uri = (
+        f'server://{server_client_identifier}/com.plexapp.plugins.library/library/sections/{section_id}/all'
+        f'?type=1&{role_key}={quote(person_name, safe="")}'
+    )
+    _server_post(
+        server_uri,
+        server_token,
+        '/library/collections',
+        params={
+            'type': 1,
+            'title': collection_name,
+            'smart': 1,
+            'sectionId': section_id,
+            'uri': uri,
+        },
+    )
+    return {'updated': 1, 'unchanged': 0}
 
 
 def resolve_movie_section_ids(

@@ -2228,6 +2228,32 @@ async function runScan() {
   }
 }
 
+function chooseCreateCollectionMode(inPlexCount) {
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.className = 'scan-modal';
+    modal.id = 'create-collection-choice-modal';
+    modal.innerHTML = `
+      <div class="scan-modal-card card">
+        <div class="scan-modal-msg">Choose collection type</div>
+        <div class="row" style="justify-content:center; gap: 10px; margin-top: 14px; flex-direction: column; align-items: center;">
+          <button id="collection-choice-regular" class="primary-btn" type="button" style="min-width: 170px;">In Plex (${inPlexCount})</button>
+          <button id="collection-choice-smart" class="secondary-btn" type="button" style="min-width: 170px;">Smart Collection</button>
+          <button id="collection-choice-cancel" class="toggle-btn" type="button" style="margin-top: 14px; min-width: 170px;">Cancel</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    const close = (choice) => {
+      modal.remove();
+      resolve(choice);
+    };
+    document.getElementById('collection-choice-regular')?.addEventListener('click', () => close('regular'));
+    document.getElementById('collection-choice-smart')?.addEventListener('click', () => close('smart'));
+    document.getElementById('collection-choice-cancel')?.addEventListener('click', () => close(null));
+  });
+}
+
 async function runShowScan() {
   const scanText = 'Scanning...';
   showScanModal(scanText);
@@ -2446,11 +2472,6 @@ async function renderActors(enableBackgroundRefresh = true) {
     return;
   }
 
-  const hasMissingFlagData = state.actors.some((actor) => Number.isFinite(Number(actor.missing_movie_count)) && Number(actor.missing_movie_count) > 0);
-  const hasInPlexFlagData = state.actors.some((actor) => Boolean(actor.missing_scan_at) && getActorPrimaryStatus(actor) === 'in_plex');
-  const hasNewData = state.actors.some((actor) => Number.isFinite(Number(actor.missing_new_count)) && Number(actor.missing_new_count) > 0);
-  const hasUpcomingData = state.actors.some((actor) => Number.isFinite(Number(actor.missing_upcoming_count)) && Number(actor.missing_upcoming_count) > 0);
-
   app.innerHTML = `
     <div class="topbar">
       <div class="topbar-left">
@@ -2478,10 +2499,10 @@ async function renderActors(enableBackgroundRefresh = true) {
           <option value="upcoming" ${state.actorsSortBy === 'upcoming' ? 'selected' : ''}>Upcoming</option>
         </select>
         <button id="actors-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.actorsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
-        ${hasInPlexFlagData || state.actorsInPlexOnly ? `<button id="actors-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.actorsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>` : ''}
-        ${hasMissingFlagData || state.actorsMissingOnly ? `<button id="actors-missing-filter" class="toggle-btn has-pill-tooltip ${state.actorsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>` : ''}
-        ${hasUpcomingData || state.actorsUpcomingOnly ? `<button id="actors-upcoming-filter" class="toggle-btn has-pill-tooltip ${state.actorsUpcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>` : ''}
-        ${hasNewData || state.actorsNewOnly ? `<button id="actors-new-filter" class="toggle-btn has-pill-tooltip ${state.actorsNewOnly ? 'active' : ''}" data-tooltip="New">NEW</button>` : ''}
+        <button id="actors-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.actorsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
+        <button id="actors-missing-filter" class="toggle-btn has-pill-tooltip ${state.actorsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
+        <button id="actors-upcoming-filter" class="toggle-btn has-pill-tooltip ${state.actorsUpcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
+        <button id="actors-new-filter" class="toggle-btn has-pill-tooltip ${state.actorsNewOnly ? 'active' : ''}" data-tooltip="New">NEW</button>
       </div>
     </div>
     <div class="alphabet-filter" id="actors-alphabet-filter">
@@ -2924,17 +2945,6 @@ async function renderShows(enableBackgroundRefresh = true) {
     return;
   }
 
-  const hasMissingFlagData = state.shows.some(
-    (show) => ((Number.isFinite(Number(show.missing_old_count)) && Number(show.missing_old_count) > 0)
-      || (Number.isFinite(Number(show.missing_new_count)) && Number(show.missing_new_count) > 0))
-      || (Number(show.has_missing_episodes) === 1 && !Number.isFinite(Number(show.missing_old_count))),
-  );
-  const hasInPlexFlagData = state.shows.some(
-    (show) => Boolean(show.missing_scan_at) && Number(show.has_missing_episodes) === 0,
-  );
-  const hasNewData = state.shows.some((show) => Number.isFinite(Number(show.missing_new_count)) && Number(show.missing_new_count) > 0);
-  const hasUpcomingData = state.shows.some((show) => Number.isFinite(Number(show.missing_upcoming_count)) && Number(show.missing_upcoming_count) > 0);
-
   app.innerHTML = `
     <div class="topbar">
       <div class="topbar-title">
@@ -2958,10 +2968,10 @@ async function renderShows(enableBackgroundRefresh = true) {
           <option value="upcoming" ${state.showsSortBy === 'upcoming' ? 'selected' : ''}>Upcoming</option>
         </select>
         <button id="shows-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.showsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
-        ${hasInPlexFlagData || state.showsInPlexOnly ? `<button id="shows-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.showsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>` : ''}
-        ${hasMissingFlagData || state.showsMissingOnly ? `<button id="shows-missing-episodes-filter" class="toggle-btn has-pill-tooltip ${state.showsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>` : ''}
-        ${hasUpcomingData || state.showsUpcomingOnly ? `<button id="shows-upcoming-filter" class="toggle-btn has-pill-tooltip ${state.showsUpcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>` : ''}
-        ${hasNewData || state.showsNewOnly ? `<button id="shows-new-filter" class="toggle-btn has-pill-tooltip ${state.showsNewOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>` : ''}
+        <button id="shows-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.showsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
+        <button id="shows-missing-episodes-filter" class="toggle-btn has-pill-tooltip ${state.showsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
+        <button id="shows-upcoming-filter" class="toggle-btn has-pill-tooltip ${state.showsUpcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
+        <button id="shows-new-filter" class="toggle-btn has-pill-tooltip ${state.showsNewOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
       </div>
     </div>
     <div class="alphabet-filter" id="shows-alphabet-filter">
@@ -3975,11 +3985,7 @@ async function renderActorDetail(actorId) {
   const data = await api(`/api/actors/${actorId}/movies?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}&new_only=${newOnly}&upcoming_only=${upcomingOnly}&role=${encodeURIComponent(castRole)}`);
   const actorName = data.actor.name;
   const inPlexCount = data.items.filter((item) => item.in_plex).length;
-  const showCreateCollection = inPlexOnly && inPlexCount > 0;
-  const hasMissingData = data.items.some((item) => item.status === 'missing' || item.status === 'new');
-  const hasInPlexData = data.items.some((item) => item.in_plex);
-  const hasNewData = data.items.some((item) => item.status === 'new');
-  const hasUpcomingData = data.items.some((item) => item.status === 'upcoming');
+  const showCreateCollection = true;
   if (state.moviesSearchQuery) {
     state.moviesSearchOpen = true;
   }
@@ -4011,10 +4017,10 @@ async function renderActorDetail(actorId) {
           <option value="upcoming" ${sortBy === 'upcoming' ? 'selected' : ''}>Upcoming</option>
         </select>
         <button id="movies-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${sortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
-        ${hasInPlexData || inPlexOnly ? `<button id="in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>` : ''}
-        ${hasMissingData || missingOnly ? `<button id="missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>` : ''}
-        ${hasUpcomingData || upcomingOnly ? `<button id="movies-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>` : ''}
-        ${hasNewData || newOnly ? `<button id="movies-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New">NEW</button>` : ''}
+        <button id="in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
+        <button id="missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
+        <button id="movies-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
+        <button id="movies-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New">NEW</button>
       </div>
     </div>
     <div class="alphabet-filter" id="movies-alphabet-filter">
@@ -4131,14 +4137,23 @@ async function renderActorDetail(actorId) {
   if (createCollectionBtn) {
     createCollectionBtn.addEventListener('click', async () => {
       if (state.createCollectionBusy) return;
+      const mode = await chooseCreateCollectionMode(inPlexCount);
+      if (!mode) return;
       state.createCollectionBusy = true;
       createCollectionBtn.disabled = true;
-      showCreateCollectionModal('Creating collection...');
+      showCreateCollectionModal(mode === 'smart' ? 'Creating smart collection...' : 'Creating collection...');
       try {
-        const result = await api('/api/collections/create-from-actor', {
-          method: 'POST',
-          body: JSON.stringify({ actor_id: actorId, collection_name: actorName }),
-        });
+        const result = await api(
+          mode === 'smart' ? '/api/collections/create-smart-from-actor' : '/api/collections/create-from-actor',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              actor_id: actorId,
+              collection_name: actorName,
+              role: castRole,
+            }),
+          },
+        );
         const updated = Number(result.updated || 0);
         const unchanged = Number(result.unchanged || 0);
         const sectionCount = Array.isArray(result.sections) ? result.sections.length : 0;
