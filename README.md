@@ -24,6 +24,7 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
   - Large poster grid sourced from Plex.
   - A-Z/All filtering and live search.
   - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW`.
+  - `Tracked` toggle badge and filter for quick watchlist-style follow-up.
   - Sorting by `Movies`, `Missing`, `Name`, `New`, and `Upcoming` with ASC/DESC direction.
   - Global `Scan Movies` modal with scoped scan (`current filter`) or `Scan All`.
   - Per-person scan pill with last-scan date and quick refresh.
@@ -33,6 +34,7 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
   - Large poster grid sourced from Plex.
   - Role-specific TMDb filmography matching against Plex library.
   - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW`.
+  - `Tracked` toggle badge and filter on movie-level cards.
   - Sorting by `Date`, `Title`, `Missing`, `New`, and `Upcoming` with ASC/DESC direction.
   - Clickable TMDb movie cards and Plex/deep-link badges.
   - Visual status badges and borders for `In Plex`, `Missing`, `Upcoming` and `NEW`.
@@ -42,6 +44,7 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
   - Large poster grid sourced from Plex.
   - A-Z/All filtering and live search.
   - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW`.
+  - `Tracked` toggle badge and filter on show-level cards.
   - Sorting by `Date`, `Episodes`, `Missing`, `Name`, `New`, and `Upcoming` with ASC/DESC direction.
   - Global `Scan Episodes` modal with scoped scan (`current filter`) or `Scan All`.
   - Per-show episode scan pill with last-scan date and quick refresh.
@@ -50,13 +53,14 @@ Localhost-only Plex companion for scanning movies and shows, matching with TMDb,
 - Seasons and episodes drill-down:
   - Show -> Season -> Episode navigation.
   - Filters for `In Plex`, `Missing`, `Upcoming`, and `NEW` with ASC/DESC direction.
+  - `Tracked` toggle badge and filter on both season and episode levels.
   - Visual status badges and borders for `In Plex`, `Missing`, `Upcoming` and `NEW`.
   - Direct season or episode download badge support via configurable prefix links.
 - Calendar experience:
   - Dedicated calendar page with month navigation and month/year picker.
   - Date-range event view for upcoming movie and show releases.
   - Event hover card with poster, full title, and release date.
-  - Type filter pills for `Movie` and `Show`.
+  - Type filter pills for `Movie`, `Show`, and `Tracked`.
 
 ## Screenshots
 <table>

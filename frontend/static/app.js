@@ -2785,9 +2785,9 @@ async function renderActors(enableBackgroundRefresh = true) {
         <button id="actors-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.actorsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
         <button id="actors-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.actorsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="actors-missing-filter" class="toggle-btn has-pill-tooltip ${state.actorsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
-        <button id="actors-tracked-filter" class="toggle-btn has-pill-tooltip ${state.actorsTrackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
         <button id="actors-upcoming-filter" class="toggle-btn has-pill-tooltip ${state.actorsUpcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="actors-new-filter" class="toggle-btn has-pill-tooltip ${state.actorsNewOnly ? 'active' : ''}" data-tooltip="New">NEW</button>
+        <button id="actors-tracked-filter" class="toggle-btn has-pill-tooltip ${state.actorsTrackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
       </div>
     </div>
     <div class="alphabet-filter" id="actors-alphabet-filter">
@@ -3293,9 +3293,9 @@ async function renderShows(enableBackgroundRefresh = true) {
         <button id="shows-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.showsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
         <button id="shows-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.showsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="shows-missing-episodes-filter" class="toggle-btn has-pill-tooltip ${state.showsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
-        <button id="shows-tracked-filter" class="toggle-btn has-pill-tooltip ${state.showsTrackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
         <button id="shows-upcoming-filter" class="toggle-btn has-pill-tooltip ${state.showsUpcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="shows-new-filter" class="toggle-btn has-pill-tooltip ${state.showsNewOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
+        <button id="shows-tracked-filter" class="toggle-btn has-pill-tooltip ${state.showsTrackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
       </div>
     </div>
     <div class="alphabet-filter" id="shows-alphabet-filter">
@@ -3940,9 +3940,9 @@ async function renderShowSeasons(showId) {
         <button id="seasons-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${seasonsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
         <button id="shows-in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="shows-missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
-        <button id="shows-tracked-toggle" class="toggle-btn has-pill-tooltip ${trackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
         <button id="shows-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="shows-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
+        <button id="shows-tracked-toggle" class="toggle-btn has-pill-tooltip ${trackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
       </div>
     </div>
     <section class="grid" id="show-seasons-grid"></section>
@@ -4166,9 +4166,9 @@ async function renderShowEpisodes(showId, seasonNumber) {
         <button id="episodes-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${episodesSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
         <button id="episodes-in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="episodes-missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
-        <button id="episodes-tracked-toggle" class="toggle-btn has-pill-tooltip ${trackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
         <button id="episodes-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="episodes-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
+        <button id="episodes-tracked-toggle" class="toggle-btn has-pill-tooltip ${trackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
       </div>
     </div>
     <section class="grid" id="show-episodes-grid"></section>
@@ -4452,9 +4452,9 @@ async function renderActorDetail(actorId) {
         <button id="movies-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${sortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
         <button id="in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
-        <button id="movies-tracked-toggle" class="toggle-btn has-pill-tooltip ${trackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
         <button id="movies-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="movies-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New">NEW</button>
+        <button id="movies-tracked-toggle" class="toggle-btn has-pill-tooltip ${trackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
       </div>
     </div>
     <div class="alphabet-filter" id="movies-alphabet-filter">
