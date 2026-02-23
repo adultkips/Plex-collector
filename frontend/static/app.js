@@ -1,5 +1,6 @@
 ﻿const app = document.getElementById('app');
 const nav = document.getElementById('floating-nav');
+const navDiscover = document.getElementById('nav-discover');
 const navProfile = document.getElementById('nav-profile');
 const navActors = document.getElementById('nav-actors');
 const navShows = document.getElementById('nav-shows');
@@ -11,6 +12,7 @@ const PLEX_LOGO_PATH = '/assets/plexlogo.png';
 const SCAN_ICON_PATH = "M20 5v5h-5l1.9-1.9A6.98 6.98 0 0 0 12 6a7 7 0 0 0-6.93 6h-2.02A9.01 9.01 0 0 1 12 4c2.21 0 4.24.8 5.8 2.12L20 4v1Zm-16 9h5l-1.9 1.9A6.98 6.98 0 0 0 12 18a7 7 0 0 0 6.93-6h2.02A9.01 9.01 0 0 1 12 20c-2.21 0-4.24-.8-5.8-2.12L4 20v-6Z";
 const CALENDAR_ICON_PATH = "M7 2h2v2h6V2h2v2h3v18H4V4h3V2Zm11 8H6v10h12V10Zm0-4H6v2h12V6Z";
 const PIN_ICON_PATH = "m12 2.75 2.91 5.89 6.5.95-4.7 4.58 1.11 6.47L12 17.58l-5.82 3.06 1.11-6.47-4.7-4.58 6.5-.95L12 2.75Z";
+const PLAY_ICON_PATH = "M8 5.14v13.72c0 .76.82 1.24 1.49.87l10.77-6.86a1 1 0 0 0 0-1.74L9.49 4.27A1 1 0 0 0 8 5.14Z";
 const ACTORS_BATCH_SIZE = 80;
 const SCAN_WORKERS_CONCURRENCY = 8; // "Scan workers"
 const ACTOR_INITIAL_FILTERS = ['All', '0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Æ', 'Ø', 'Å', '#'];
@@ -49,7 +51,7 @@ const CAST_ROLE_ICONS = {
   writer: '/assets/writer.png',
 };
 const CAST_ROLE_STORAGE_KEY = 'castRole';
-const SHOW_SEASONS_CACHE_PREFIX = 'pc_cache_show_seasons_v1_';
+const SHOW_SEASONS_CACHE_PREFIX = 'pc_cache_show_seasons_v2_';
 const SHOW_EPISODES_CACHE_PREFIX = 'pc_cache_show_episodes_v1_';
 const CACHE_TTL_MS = {
   profile: 1000 * 60 * 60 * 6,
@@ -60,6 +62,7 @@ const CACHE_TTL_MS = {
 const LAST_ROUTE_KEY = 'lastAppRoute';
 const LAST_CAST_ROUTE_KEY = 'lastCastRoute';
 const LAST_SHOWS_ROUTE_KEY = 'lastShowsRoute';
+const DISCOVER_FEED_BATCH_SIZE = 20;
 const SCROLL_POS_PREFIX = 'scrollPos:';
 const CALENDAR_VIEW_MODE_KEY = 'calendarViewMode';
 const CALENDAR_SELECTED_DATE_KEY = 'calendarSelectedDate';
@@ -177,6 +180,33 @@ const state = {
   calendarShowMovies: localStorage.getItem('calendarShowMovies') !== '0',
   calendarShowShows: localStorage.getItem('calendarShowShows') !== '0',
   calendarTrackedOnly: localStorage.getItem('calendarTrackedOnly') === '1',
+  discoverMissingOnly: localStorage.getItem('discoverMissingOnly') === '1',
+  discoverNewOnly: localStorage.getItem('discoverNewOnly') === '1',
+  discoverTrackedOnly: localStorage.getItem('discoverTrackedOnly') === '1',
+  discoverSortBy: (() => {
+    const value = (localStorage.getItem('discoverSortBy') || 'date').toLowerCase();
+    return ['date', 'name', 'random'].includes(value) ? value : 'date';
+  })(),
+  discoverRandomSeed: localStorage.getItem('discoverRandomSeed') || '',
+  discoverMedia: localStorage.getItem('discoverMedia') || 'all',
+  discoverFeedItems: [],
+  discoverUpcomingItems: [],
+  discoverFeedOffset: 0,
+  discoverFeedHasMore: true,
+  discoverFeedLoading: false,
+  discoverFeedLoadingMore: false,
+  discoverUpcomingLoading: false,
+  discoverFeedToken: 0,
+  discoverUpcomingToken: 0,
+  discoverCarouselDragging: false,
+  discoverCarouselTrackWidth: 0,
+  discoverTrailerUrls: {},
+  discoverTrailerMissing: {},
+  discoverTrailerLoadingIds: new Set(),
+  discoverTrailerVisibilityObserver: null,
+  discoverTrailerPlaybackRaf: 0,
+  discoverTrailerScrollHandler: null,
+  discoverTrailerResizeHandler: null,
   currentPathname: window.location.pathname,
   currentRouteKey: `${window.location.pathname}${window.location.search || ''}`,
 };
@@ -208,6 +238,7 @@ const LOCAL_STORAGE_RESET_KEYS = [
 ];
 let plexAuthPopup = null;
 
+navDiscover?.addEventListener('click', () => routeTo('discover'));
 navProfile.addEventListener('click', () => routeTo('profile'));
 navActors.addEventListener('click', () => {
   const currentPath = window.location.pathname;
@@ -236,6 +267,9 @@ navShows.addEventListener('click', () => {
 navCalendar.addEventListener('click', () => routeTo('calendar'));
 
 window.addEventListener('popstate', handleLocation);
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeTrailerModal();
+});
 
 function updateScrollState() {
   document.body.classList.toggle('is-scrolled', window.scrollY > 0);
@@ -675,6 +709,46 @@ function pinIconTag(iconClass = 'pin-icon') {
   `;
 }
 
+function optimizePosterUrl(url) {
+  const value = String(url || '').trim();
+  if (!value) return value;
+  if (!value.includes('image.tmdb.org/t/p/')) return value;
+  return value
+    .replace('/t/p/w500/', '/t/p/w342/')
+    .replace('/t/p/original/', '/t/p/w342/');
+}
+
+function preloadImage(url) {
+  return new Promise((resolve) => {
+    const value = String(url || '').trim();
+    if (!value) {
+      resolve();
+      return;
+    }
+    const img = new Image();
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    img.onload = finish;
+    img.onerror = finish;
+    img.src = value;
+    setTimeout(finish, 5000);
+  });
+}
+
+function playIconTag(iconClass = 'play-icon') {
+  return `
+    <span class="${iconClass}" aria-hidden="true">
+      <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+        <path d="${PLAY_ICON_PATH}"></path>
+      </svg>
+    </span>
+  `;
+}
+
 function getShowPrimaryStatus(show) {
   const newCount = Number.isFinite(Number(show?.missing_new_count)) ? Number(show.missing_new_count) : 0;
   const oldCount = Number.isFinite(Number(show?.missing_old_count)) ? Number(show.missing_old_count) : 0;
@@ -767,10 +841,23 @@ function buildRoundTrackBadge(trackMeta) {
   return `<button ${attrs.join(' ')}>${pinIconTag('pin-icon')}</button>`;
 }
 
+function buildRoundPlayBadge(playMeta) {
+  const label = 'Play Trailer';
+  const type = String(playMeta?.type || '').trim().toLowerCase();
+  const tmdbId = Number(playMeta?.tmdbId || 0);
+  const isValid = (type === 'movie' || type === 'show') && Number.isFinite(tmdbId) && tmdbId > 0;
+  if (isValid) {
+    return `<button type="button" class="badge-link badge-round badge-play has-pill-tooltip" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}" data-play-type="${type}" data-play-tmdb-id="${tmdbId}">${playIconTag('badge-icon-play')}</button>`;
+  }
+  return `<span class="badge-link badge-round badge-play badge-disabled has-pill-tooltip" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}">${playIconTag('badge-icon-play')}</span>`;
+}
+
 function buildCardBadgeStrip(options) {
   const {
     showTrack = false,
     trackMeta = null,
+    showPlay = false,
+    playMeta = null,
     showPlex = false,
     plexUrl = '',
     showDownload = false,
@@ -779,6 +866,9 @@ function buildCardBadgeStrip(options) {
   const badges = [];
   if (showTrack) {
     badges.push(buildRoundTrackBadge(trackMeta));
+  }
+  if (showPlay) {
+    badges.push(buildRoundPlayBadge(playMeta));
   }
   if (showPlex) {
     badges.push(buildRoundPlexBadge(plexUrl));
@@ -833,12 +923,13 @@ function buildTrackModalMessage(kind, result, nextTracked) {
   return actionText;
 }
 
-async function handleTrackBadgeToggle(buttonEl, applyTrackedState) {
+async function handleTrackBadgeToggle(buttonEl, applyTrackedState, options = {}) {
   if (!buttonEl) return;
+  const showModal = options?.showModal !== false;
   const kind = buttonEl.dataset.trackKind || '';
   const nextTracked = buttonEl.dataset.tracked !== '1';
   const showId = String(buttonEl.dataset.showId || '').trim();
-  showScanModal('Tracking...');
+  if (showModal) showScanModal(nextTracked ? 'Tracking...' : 'Untracking...');
   try {
     const result = await toggleTrackFromBadge(buttonEl);
     if (typeof applyTrackedState === 'function') {
@@ -847,10 +938,142 @@ async function handleTrackBadgeToggle(buttonEl, applyTrackedState) {
     if ((kind === 'show' || kind === 'season' || kind === 'episode') && showId) {
       invalidateShowDetailCaches(showId);
     }
-    showScanSuccessModal(buildTrackModalMessage(kind, result, nextTracked), true);
+    if (showModal) {
+      showScanSuccessModal(buildTrackModalMessage(kind, result, nextTracked), true);
+    }
   } catch (error) {
-    showScanErrorModal(error.message, true);
+    if (showModal) {
+      showScanErrorModal(error.message, true);
+    } else {
+      window.alert(error.message);
+    }
   }
+}
+
+function toTrailerEmbedUrl(rawUrl) {
+  const value = String(rawUrl || '').trim();
+  if (!value) return '';
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    if (host.includes('youtube.com')) {
+      const videoId = url.searchParams.get('v');
+      if (videoId) {
+        const origin = encodeURIComponent(window.location.origin);
+        return `https://www.youtube.com/embed/${encodeURIComponent(videoId)}?autoplay=1&origin=${origin}`;
+      }
+      const parts = url.pathname.split('/').filter(Boolean);
+      const embedId = parts[parts.length - 1];
+      if (embedId) {
+        const origin = encodeURIComponent(window.location.origin);
+        return `https://www.youtube.com/embed/${encodeURIComponent(embedId)}?autoplay=1&origin=${origin}`;
+      }
+    }
+    if (host.includes('youtu.be')) {
+      const videoId = url.pathname.replace(/^\/+/, '');
+      if (videoId) {
+        const origin = encodeURIComponent(window.location.origin);
+        return `https://www.youtube.com/embed/${encodeURIComponent(videoId)}?autoplay=1&origin=${origin}`;
+      }
+    }
+    return value;
+  } catch {
+    return value;
+  }
+}
+
+function closeTrailerModal() {
+  const modal = document.getElementById('trailer-modal');
+  if (!modal) return;
+  modal.classList.remove('open');
+  const frame = modal.querySelector('#trailer-modal-frame');
+  if (frame) frame.setAttribute('src', 'about:blank');
+  const emptyState = modal.querySelector('#trailer-modal-empty');
+  if (emptyState) emptyState.classList.remove('open');
+  if (frame) frame.classList.remove('hidden');
+}
+
+function openTrailerModal(videoUrl, options = {}) {
+  const embedUrl = toTrailerEmbedUrl(videoUrl);
+  const showNotFound = Boolean(options?.notFound) || !embedUrl;
+  let modal = document.getElementById('trailer-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'trailer-modal';
+    modal.className = 'trailer-modal';
+    modal.innerHTML = `
+      <div class="trailer-modal-dialog card" role="dialog" aria-modal="true" aria-label="Trailer">
+        <button id="trailer-modal-close" class="trailer-modal-close" type="button" aria-label="Close">×</button>
+        <div class="trailer-modal-frame-wrap">
+          <div id="trailer-modal-empty" class="trailer-modal-empty">
+            <div class="trailer-modal-empty-title">Video not found</div>
+            <div class="trailer-modal-empty-text">No trailer is available for this title.</div>
+          </div>
+          <iframe id="trailer-modal-frame" class="trailer-modal-frame" src="about:blank" title="Trailer" allow="autoplay; encrypted-media; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) closeTrailerModal();
+    });
+    document.getElementById('trailer-modal-close')?.addEventListener('click', closeTrailerModal);
+  }
+  const frame = modal.querySelector('#trailer-modal-frame');
+  const emptyState = modal.querySelector('#trailer-modal-empty');
+  if (showNotFound) {
+    if (frame) {
+      frame.setAttribute('src', 'about:blank');
+      frame.classList.add('hidden');
+    }
+    if (emptyState) emptyState.classList.add('open');
+  } else {
+    if (emptyState) emptyState.classList.remove('open');
+    if (frame) {
+      frame.classList.remove('hidden');
+      frame.setAttribute('src', embedUrl);
+    }
+  }
+  modal.classList.add('open');
+}
+
+async function handlePlayBadgeClick(buttonEl) {
+  if (!buttonEl || buttonEl.disabled) return;
+  const type = String(buttonEl.dataset.playType || '').trim().toLowerCase();
+  const tmdbId = Number(buttonEl.dataset.playTmdbId || 0);
+  if (!(type === 'movie' || type === 'show') || !Number.isFinite(tmdbId) || tmdbId <= 0) {
+    showScanErrorModal('Missing TMDb id for trailer.', true);
+    return;
+  }
+  buttonEl.disabled = true;
+  showScanModal('Loading trailer...');
+  try {
+    const data = await api(`/api/tmdb/trailer?type=${encodeURIComponent(type)}&tmdb_id=${tmdbId}`);
+    closeScanModal();
+    if (data?.trailer_url) {
+      openTrailerModal(data.trailer_url);
+    } else {
+      openTrailerModal('', { notFound: true });
+    }
+  } catch (error) {
+    closeScanModal();
+    openTrailerModal('', { notFound: true });
+  } finally {
+    buttonEl.disabled = false;
+  }
+}
+
+function bindPlayBadgeClicks(container) {
+  if (!container) return;
+  container.querySelectorAll('.badge-play[data-play-type][data-play-tmdb-id]').forEach((buttonEl) => {
+    if (buttonEl.dataset.boundPlayClick === '1') return;
+    buttonEl.dataset.boundPlayClick = '1';
+    buttonEl.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      handlePlayBadgeClick(buttonEl);
+    });
+  });
 }
 
 function buildDownloadExampleText(type, settings) {
@@ -1082,6 +1305,7 @@ function setNavVisible(visible) {
 }
 
 function setActiveNav(view) {
+  navDiscover?.classList.toggle('active', view === 'discover');
   navProfile.classList.toggle('active', view === 'profile');
   navActors.classList.toggle('active', view === 'actors');
   navShows.classList.toggle('active', view === 'shows');
@@ -1188,6 +1412,19 @@ async function handleLocation() {
     return;
   }
 
+  if (path === '/discover') {
+    persistLastRoute(path);
+    setFullWidthGridMode(false);
+    setNavVisible(true);
+    await renderDiscover();
+    const fromDetail = previousPath.startsWith('/cast/') || previousPath.startsWith('/shows/');
+    if (!(fromDetail && restoreRouteScrollPosition(routeKey))) {
+      scrollToPageTop();
+    }
+    setActiveNav('discover');
+    return;
+  }
+
   if (path.startsWith('/cast/')) {
     persistLastRoute(path);
     persistLastCastRoute(`${path}${window.location.search || ''}`);
@@ -1273,6 +1510,721 @@ async function handleLocation() {
   await renderProfile();
   scrollToPageTop();
   setActiveNav('profile');
+}
+
+function normalizeDiscoverMedia(value) {
+  const v = String(value || '').trim().toLowerCase();
+  return ['all', 'movie', 'show'].includes(v) ? v : 'all';
+}
+
+function normalizeDiscoverSort(value) {
+  const v = String(value || '').trim().toLowerCase();
+  return ['date', 'name', 'random'].includes(v) ? v : 'date';
+}
+
+function getDiscoverStatusParam() {
+  // Missing OR NEW (mutually exclusive in UI).
+  if (state.discoverMissingOnly) return 'missing';
+  if (state.discoverNewOnly) return 'new';
+  return 'all';
+}
+
+function getDiscoverTmdbUrl(item) {
+  if (!item || typeof item !== 'object') return '';
+  const title = String(item.title || item.show_title || '').trim();
+  const eventDate = String(item.event_date || '').trim();
+  const year = /^\d{4}-\d{2}-\d{2}$/.test(eventDate) ? eventDate.slice(0, 4) : '';
+  const buildSearchUrl = (queryTitle) => {
+    const query = `${queryTitle || ''} ${year}`.trim();
+    if (!query) return 'https://www.themoviedb.org/search';
+    return `https://www.themoviedb.org/search?query=${encodeURIComponent(query)}`;
+  };
+  if (item.type === 'movie') {
+    const id = Number(item.tmdb_movie_id || 0);
+    return id > 0 ? `https://www.themoviedb.org/movie/${id}` : buildSearchUrl(title);
+  }
+  const showId = Number(item.tmdb_show_id || 0);
+  const season = Number(item.season_number || 0);
+  const episode = Number(item.episode_number || 0);
+  if (showId > 0 && season > 0 && episode > 0) {
+    return `https://www.themoviedb.org/tv/${showId}/season/${season}/episode/${episode}`;
+  }
+  return showId > 0 ? `https://www.themoviedb.org/tv/${showId}` : buildSearchUrl(title);
+}
+
+function resetDiscoverFeedState() {
+  state.discoverFeedItems = [];
+  state.discoverFeedOffset = 0;
+  state.discoverFeedHasMore = true;
+  state.discoverTrailerUrls = {};
+  state.discoverTrailerMissing = {};
+  state.discoverTrailerLoadingIds = new Set();
+}
+
+function syncDiscoverControlsDisabled() {
+  const disabled = Boolean(state.discoverFeedLoading || state.discoverFeedLoadingMore);
+  [
+    'discover-status-select',
+    'discover-media-movies',
+    'discover-media-shows',
+    'discover-missing-only',
+    'discover-new-only',
+    'discover-tracked-only',
+  ].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = disabled;
+  });
+}
+
+function toDiscoverTrailerEmbedUrl(rawUrl) {
+  const base = toTrailerEmbedUrl(rawUrl);
+  if (!base) return '';
+  try {
+    const url = new URL(base);
+    url.searchParams.set('autoplay', '0');
+    url.searchParams.set('mute', '1');
+    url.searchParams.set('playsinline', '1');
+    url.searchParams.set('enablejsapi', '1');
+    url.searchParams.set('rel', '0');
+    url.searchParams.set('modestbranding', '1');
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+function controlDiscoverTrailerFrame(frame, command) {
+  if (!frame || !frame.contentWindow) return;
+  try {
+    frame.contentWindow.postMessage(
+      JSON.stringify({ event: 'command', func: command, args: [] }),
+      '*',
+    );
+  } catch {
+    // Ignore cross-origin command failures.
+  }
+}
+
+function pauseAllDiscoverTrailerFrames(exceptFrame = null) {
+  document.querySelectorAll('.discover-feed-trailer-frame').forEach((frame) => {
+    if (!(frame instanceof HTMLIFrameElement)) return;
+    if (exceptFrame && frame === exceptFrame) return;
+    controlDiscoverTrailerFrame(frame, 'pauseVideo');
+  });
+}
+
+function evaluateDiscoverTrailerPlayback() {
+  const frames = Array.from(document.querySelectorAll('.discover-feed-trailer-frame'));
+  if (!frames.length) return;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  const triggerTop = viewportHeight * 0.38; // Delay until the card is further up.
+  let winner = null;
+  let winnerScore = Number.POSITIVE_INFINITY;
+
+  frames.forEach((frame) => {
+    if (!(frame instanceof HTMLIFrameElement)) return;
+    const rect = frame.getBoundingClientRect();
+    const visiblePx = Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0);
+    const ratio = Math.max(0, Math.min(1, visiblePx / Math.max(1, rect.height)));
+    if (ratio < 0.55) {
+      controlDiscoverTrailerFrame(frame, 'pauseVideo');
+      return;
+    }
+    const score = Math.abs(rect.top - triggerTop);
+    if (score < winnerScore) {
+      winnerScore = score;
+      winner = frame;
+    }
+  });
+
+  pauseAllDiscoverTrailerFrames(winner);
+  if (winner) controlDiscoverTrailerFrame(winner, 'playVideo');
+}
+
+function scheduleDiscoverTrailerPlaybackEval() {
+  if (state.discoverTrailerPlaybackRaf) return;
+  state.discoverTrailerPlaybackRaf = window.requestAnimationFrame(() => {
+    state.discoverTrailerPlaybackRaf = 0;
+    evaluateDiscoverTrailerPlayback();
+  });
+}
+
+function bindDiscoverTrailerVisibility() {
+  const frames = Array.from(document.querySelectorAll('.discover-feed-trailer-frame'));
+  if (state.discoverTrailerVisibilityObserver) {
+    state.discoverTrailerVisibilityObserver.disconnect();
+    state.discoverTrailerVisibilityObserver = null;
+  }
+  if (state.discoverTrailerScrollHandler) {
+    window.removeEventListener('scroll', state.discoverTrailerScrollHandler);
+    state.discoverTrailerScrollHandler = null;
+  }
+  if (state.discoverTrailerResizeHandler) {
+    window.removeEventListener('resize', state.discoverTrailerResizeHandler);
+    state.discoverTrailerResizeHandler = null;
+  }
+  if (!frames.length) return;
+  const observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const frame = entry.target;
+      if (!(frame instanceof HTMLIFrameElement)) continue;
+      if (!entry.isIntersecting) {
+        controlDiscoverTrailerFrame(frame, 'pauseVideo');
+      }
+    }
+    scheduleDiscoverTrailerPlaybackEval();
+  }, { threshold: [0, 0.2, 0.4, 0.6, 0.8, 1] });
+  frames.forEach((frame) => {
+    frame.addEventListener('load', () => {
+      scheduleDiscoverTrailerPlaybackEval();
+    }, { once: true });
+    observer.observe(frame);
+  });
+  state.discoverTrailerVisibilityObserver = observer;
+  state.discoverTrailerScrollHandler = () => scheduleDiscoverTrailerPlaybackEval();
+  state.discoverTrailerResizeHandler = () => scheduleDiscoverTrailerPlaybackEval();
+  window.addEventListener('scroll', state.discoverTrailerScrollHandler, { passive: true });
+  window.addEventListener('resize', state.discoverTrailerResizeHandler, { passive: true });
+  scheduleDiscoverTrailerPlaybackEval();
+}
+
+async function preloadDiscoverMovieTrailersForIds(movieIds, options = {}) {
+  const rerenderOnDone = options?.rerenderOnDone !== false;
+  const pendingIds = movieIds.filter(
+    (id) => !state.discoverTrailerUrls[id]
+      && !state.discoverTrailerMissing[id]
+      && !state.discoverTrailerLoadingIds.has(id),
+  );
+  if (!pendingIds.length) return;
+  pendingIds.forEach((id) => state.discoverTrailerLoadingIds.add(id));
+  try {
+    const payload = await api('/api/tmdb/trailers/movies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tmdb_ids: pendingIds }),
+    });
+    const rows = Array.isArray(payload?.items) ? payload.items : [];
+    const nextUrls = { ...state.discoverTrailerUrls };
+    const nextMissing = { ...state.discoverTrailerMissing };
+    rows.forEach((row) => {
+      const id = Number(row?.tmdb_id || 0);
+      if (!id) return;
+      const raw = String(row?.trailer_url || '').trim();
+      if (raw) {
+        nextUrls[id] = raw;
+        delete nextMissing[id];
+      } else {
+        nextMissing[id] = true;
+      }
+    });
+    pendingIds.forEach((id) => {
+      if (!(id in nextUrls) && !(id in nextMissing)) nextMissing[id] = true;
+    });
+    state.discoverTrailerUrls = nextUrls;
+    state.discoverTrailerMissing = nextMissing;
+    if (rerenderOnDone) renderDiscoverFeedList();
+  } catch {
+    const nextMissing = { ...state.discoverTrailerMissing };
+    pendingIds.forEach((id) => {
+      nextMissing[id] = true;
+    });
+    state.discoverTrailerMissing = nextMissing;
+    if (rerenderOnDone) renderDiscoverFeedList();
+  } finally {
+    pendingIds.forEach((id) => state.discoverTrailerLoadingIds.delete(id));
+  }
+}
+
+async function loadDiscoverMovieTrailersForVisibleItems() {
+  const movieIds = state.discoverFeedItems
+    .filter((item) => item?.type === 'movie')
+    .map((item) => Number(item.tmdb_movie_id || 0))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  await preloadDiscoverMovieTrailersForIds(movieIds, { rerenderOnDone: true });
+}
+
+function renderDiscoverFeedCard(item, index) {
+  const tmdbUrl = getDiscoverTmdbUrl(item);
+  const poster = optimizePosterUrl(item.poster_url) || (item.type === 'movie' ? MOVIE_PLACEHOLDER : SHOW_PLACEHOLDER);
+  const priorityAttr = index < 12 ? 'high' : 'auto';
+  const dateText = formatDateDdMmYyyy(item.event_date);
+  const dotClass = item.type === 'movie' ? 'movie' : 'show';
+  const downloadUrl = item.type === 'movie'
+    ? buildDownloadLink('movie', item.title || '')
+    : buildDownloadLink('episode', buildEpisodeKeyword(item.show_title || item.title || '', item.season_number, item.episode_number));
+  const episodeLine = item.type === 'show'
+    ? `<div class="discover-feed-episode">Season ${String(Number(item.season_number) || 0).padStart(2, '0')} · Episode ${String(Number(item.episode_number) || 0).padStart(2, '0')}</div>`
+    : '';
+  const directorLine = item.type === 'movie' && String(item.director || '').trim()
+    ? `<div class="discover-feed-credit"><span class="discover-feed-credit-label">Director:</span> ${escapeHtml(item.director)}</div>`
+    : '';
+  const writerLine = item.type === 'movie' && String(item.writer || '').trim()
+    ? `<div class="discover-feed-credit"><span class="discover-feed-credit-label">Writer:</span> ${escapeHtml(item.writer)}</div>`
+    : '';
+  const castLine = item.type === 'movie' && Array.isArray(item.top_cast) && item.top_cast.length
+    ? `<div class="discover-feed-credit"><span class="discover-feed-credit-label">Actors:</span> ${escapeHtml(item.top_cast.slice(0, 3).join(', '))}</div>`
+    : '';
+  const itemStatus = String(item.status || '').trim().toLowerCase();
+  const statusBadge = itemStatus === 'new'
+    ? '<div class="status-badges"><span class="new-badge" title="New" aria-label="New">NEW</span></div>'
+    : (itemStatus === 'missing'
+      ? '<div class="status-badges"><span class="missing-badge" title="Missing" aria-label="Missing">!</span></div>'
+      : '');
+  const downloadBadge = downloadUrl
+    ? `<a class="badge-link badge-download calendar-day-download-btn" href="${downloadUrl}" target="_blank" rel="noopener noreferrer">Download <span class="badge-icon badge-icon-download">&#8595;</span></a>`
+    : '<span class="badge-link badge-download badge-disabled calendar-day-download-btn">Download <span class="badge-icon badge-icon-download">&#8595;</span></span>';
+  const playType = item.type === 'show' ? 'show' : '';
+  const playTmdbId = item.type === 'show' ? Number(item.tmdb_show_id || 0) : 0;
+  const trailerBadge = item.type === 'show'
+    ? (
+      playTmdbId > 0
+        ? `<button type="button" class="badge-link badge-play calendar-day-download-btn discover-feed-trailer-btn" data-play-type="${playType}" data-play-tmdb-id="${playTmdbId}">Trailer ${playIconTag('badge-icon-play')}</button>`
+        : `<span class="badge-link badge-play badge-disabled calendar-day-download-btn discover-feed-trailer-btn">Trailer ${playIconTag('badge-icon-play')}</span>`
+    )
+    : '';
+  const isTracked = Boolean(item.tracked);
+  const movieId = Number(item.tmdb_movie_id || 0);
+  const trailerUrl = item.type === 'movie' && movieId > 0 ? String(state.discoverTrailerUrls[movieId] || '').trim() : '';
+  const trailerEmbedUrl = trailerUrl ? toDiscoverTrailerEmbedUrl(trailerUrl) : '';
+  const trailerBanner = trailerEmbedUrl
+    ? `<div class="discover-feed-trailer-banner"><iframe class="discover-feed-trailer-frame" src="${escapeHtml(trailerEmbedUrl)}" title="Trailer" loading="eager" allow="autoplay; encrypted-media; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin"></iframe></div>`
+    : '';
+  const trackAttrs = item.type === 'movie'
+    ? `data-track-kind="movie" data-tmdb-movie-id="${Number(item.tmdb_movie_id || 0)}"`
+    : `data-track-kind="episode" data-show-id="${escapeHtml(item.show_id || '')}" data-season-number="${Number(item.season_number || 0)}" data-episode-number="${Number(item.episode_number || 0)}"`;
+  const trackLabel = isTracked ? 'Untrack' : 'Track';
+  const trackBadge = `<button type="button" class="badge-link badge-track calendar-day-download-btn discover-feed-track-btn${isTracked ? ' active' : ''}" data-feed-index="${index}" data-tracked="${isTracked ? '1' : '0'}" ${trackAttrs}>${trackLabel} ${pinIconTag('pin-icon')}</button>`;
+  return `
+    <article class="discover-feed-card${item.tracked ? ' has-tracked' : ''}" data-feed-index="${index}" data-tmdb-url="${escapeHtml(tmdbUrl)}">
+      ${trailerBanner}
+      <div class="discover-feed-poster-wrap">
+        <img class="discover-feed-poster" src="${poster}" alt="${escapeHtml(item.title || item.show_title || 'Poster')}" loading="eager" fetchpriority="${priorityAttr}" decoding="async" />
+        ${statusBadge}
+      </div>
+      <div class="discover-feed-info">
+        <div class="discover-feed-dot-wrap"><span class="calendar-event-dot ${dotClass}"></span></div>
+        <div class="discover-feed-title">${escapeHtml(item.title || item.show_title || 'Untitled')}</div>
+        ${episodeLine}
+        <div class="discover-feed-meta"><span class="discover-feed-date">${escapeHtml(dateText)}</span></div>
+        ${directorLine}
+        ${writerLine}
+        ${castLine}
+        ${trailerBadge}
+        ${trackBadge}
+        ${downloadBadge}
+      </div>
+    </article>
+  `;
+}
+
+function bindDiscoverFeedListInteractions(listEl) {
+  if (!listEl) return;
+  listEl.querySelectorAll('.discover-feed-card').forEach((card) => {
+    if (card.dataset.boundCardClick === '1') return;
+    card.dataset.boundCardClick = '1';
+    const url = card.getAttribute('data-tmdb-url') || '';
+    if (!url) return;
+    card.addEventListener('click', () => window.open(url, '_blank', 'noopener,noreferrer'));
+  });
+  listEl.querySelectorAll('.discover-feed-card .badge-link').forEach((link) => {
+    if (link.dataset.boundStopProp === '1') return;
+    link.dataset.boundStopProp = '1';
+    link.addEventListener('click', (event) => event.stopPropagation());
+  });
+  listEl.querySelectorAll('.discover-feed-trailer-frame').forEach((frame) => {
+    if (frame.dataset.boundStopProp === '1') return;
+    frame.dataset.boundStopProp = '1';
+    frame.addEventListener('click', (event) => event.stopPropagation());
+  });
+  listEl.querySelectorAll('.discover-feed-track-btn').forEach((btn) => {
+    if (btn.dataset.boundTrackClick === '1') return;
+    btn.dataset.boundTrackClick = '1';
+    btn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const itemIndex = Number(btn.dataset.feedIndex || -1);
+      const itemRef = state.discoverFeedItems[itemIndex];
+      if (!itemRef) return;
+      await handleTrackBadgeToggle(btn, (nextTracked) => {
+        itemRef.tracked = nextTracked;
+        renderDiscoverFeedList();
+      }, { showModal: false });
+    });
+  });
+  bindPlayBadgeClicks(listEl);
+}
+
+function renderDiscoverFeedList() {
+  const list = document.getElementById('discover-feed-list');
+  const loadingEl = document.getElementById('discover-feed-loading');
+  const loadingMoreEl = document.getElementById('discover-feed-loading-more');
+  if (!list || !loadingEl || !loadingMoreEl) return;
+  syncDiscoverControlsDisabled();
+  loadingEl.classList.toggle('hidden', !state.discoverFeedLoading);
+  loadingMoreEl.classList.toggle('hidden', !state.discoverFeedLoadingMore || state.discoverFeedLoading);
+  if (state.discoverFeedLoading) {
+    list.innerHTML = '';
+    return;
+  }
+  if (!state.discoverFeedItems.length) {
+    list.innerHTML = '<div class="empty">No items found.</div>';
+    return;
+  }
+  const html = state.discoverFeedItems.map((item, index) => renderDiscoverFeedCard(item, index)).join('');
+  list.innerHTML = html;
+  bindDiscoverFeedListInteractions(list);
+  bindDiscoverTrailerVisibility();
+}
+
+async function loadDiscoverFeed(reset = false) {
+  if (state.discoverFeedLoading || state.discoverFeedLoadingMore) return;
+  if (!reset && !state.discoverFeedHasMore) return;
+  const token = ++state.discoverFeedToken;
+  const statusParam = getDiscoverStatusParam();
+  if (reset && normalizeDiscoverSort(state.discoverSortBy) === 'random') {
+    state.discoverRandomSeed = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem('discoverRandomSeed', state.discoverRandomSeed);
+  }
+  if (reset) {
+    resetDiscoverFeedState();
+    state.discoverFeedLoading = true;
+  } else {
+    state.discoverFeedLoadingMore = true;
+  }
+  renderDiscoverFeedList();
+  try {
+    const data = await api(
+      `/api/discovery/feed?status=${encodeURIComponent(statusParam)}`
+      + `&media=${encodeURIComponent(normalizeDiscoverMedia(state.discoverMedia))}`
+      + `&tracked_only=${state.discoverTrackedOnly ? '1' : '0'}`
+      + `&sort_by=${encodeURIComponent(normalizeDiscoverSort(state.discoverSortBy))}`
+      + `&random_seed=${encodeURIComponent(state.discoverRandomSeed || '')}`
+      + `&offset=${state.discoverFeedOffset}&limit=${DISCOVER_FEED_BATCH_SIZE}`
+    );
+    if (token !== state.discoverFeedToken) return;
+    const items = Array.isArray(data?.items) ? data.items : [];
+    const incomingMovieIds = items
+      .filter((item) => item?.type === 'movie')
+      .map((item) => Number(item.tmdb_movie_id || 0))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    await preloadDiscoverMovieTrailersForIds(incomingMovieIds, { rerenderOnDone: false });
+    if (reset) {
+      state.discoverFeedItems = items;
+    } else {
+      const appendStartIndex = state.discoverFeedItems.length;
+      state.discoverFeedItems = [...state.discoverFeedItems, ...items];
+      const list = document.getElementById('discover-feed-list');
+      if (list && items.length) {
+        const appendHtml = items.map((item, idx) => renderDiscoverFeedCard(item, appendStartIndex + idx)).join('');
+        const hasEmpty = Boolean(list.querySelector('.empty'));
+        if (hasEmpty) list.innerHTML = '';
+        list.insertAdjacentHTML('beforeend', appendHtml);
+        bindDiscoverFeedListInteractions(list);
+        bindDiscoverTrailerVisibility();
+      }
+    }
+    state.discoverFeedOffset = state.discoverFeedItems.length;
+    state.discoverFeedHasMore = Boolean(data?.has_more);
+  } catch {
+    if (token === state.discoverFeedToken) state.discoverFeedHasMore = false;
+  } finally {
+    if (token === state.discoverFeedToken) {
+      state.discoverFeedLoading = false;
+      state.discoverFeedLoadingMore = false;
+      if (reset) {
+        renderDiscoverFeedList();
+      } else {
+        syncDiscoverControlsDisabled();
+        const loadingEl = document.getElementById('discover-feed-loading');
+        const loadingMoreEl = document.getElementById('discover-feed-loading-more');
+        if (loadingEl) loadingEl.classList.add('hidden');
+        if (loadingMoreEl) loadingMoreEl.classList.add('hidden');
+      }
+    }
+  }
+}
+
+function setupDiscoverInfiniteScroll() {
+  if (state.discoverScrollHandler) {
+    window.removeEventListener('scroll', state.discoverScrollHandler);
+  }
+  state.discoverScrollHandler = () => {
+    if (window.location.pathname !== '/discover') return;
+    if (state.discoverFeedLoading || state.discoverFeedLoadingMore || !state.discoverFeedHasMore) return;
+    const nearBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - 240);
+    if (nearBottom) loadDiscoverFeed(false);
+  };
+  window.addEventListener('scroll', state.discoverScrollHandler, { passive: true });
+}
+
+function renderDiscoverUpcoming() {
+  const viewport = document.getElementById('discover-upcoming-viewport');
+  const prevBtn = document.getElementById('discover-upcoming-prev');
+  const nextBtn = document.getElementById('discover-upcoming-next');
+  if (!viewport || !prevBtn || !nextBtn) return;
+  if (state.discoverUpcomingLoading) {
+    viewport.innerHTML = '<div class="discover-upcoming-placeholder"></div>';
+    prevBtn.classList.add('hidden');
+    nextBtn.classList.add('hidden');
+    return;
+  }
+  const items = Array.isArray(state.discoverUpcomingItems) ? state.discoverUpcomingItems : [];
+  if (!items.length) {
+    viewport.innerHTML = '<div class="empty">No upcoming releases.</div>';
+    prevBtn.classList.add('hidden');
+    nextBtn.classList.add('hidden');
+    return;
+  }
+  prevBtn.classList.remove('hidden');
+  nextBtn.classList.remove('hidden');
+  const card = (item, itemIndex) => {
+    const url = getDiscoverTmdbUrl(item);
+    const poster = optimizePosterUrl(item.poster_url) || (item.type === 'movie' ? MOVIE_PLACEHOLDER : SHOW_PLACEHOLDER);
+    const title = item.type === 'show'
+      ? `${item.show_title || item.title} - S${String(Number(item.season_number) || 0).padStart(2, '0')}E${String(Number(item.episode_number) || 0).padStart(2, '0')}`
+      : (item.title || 'Untitled');
+    const dateText = formatDateDdMmYyyy(item.event_date);
+    const movieTrackable = item.type === 'movie' && Number(item.tmdb_movie_id || 0) > 0;
+    const episodeTrackable = item.type === 'show'
+      && String(item.show_id || '').trim()
+      && Number(item.season_number || 0) > 0
+      && Number(item.episode_number || 0) > 0;
+    const trackBadge = movieTrackable
+      ? buildRoundTrackBadge({
+        kind: 'movie',
+        tmdbMovieId: Number(item.tmdb_movie_id || 0),
+        active: Boolean(item.tracked),
+      })
+      : (episodeTrackable
+        ? buildRoundTrackBadge({
+          kind: 'episode',
+          showId: String(item.show_id || ''),
+          seasonNumber: Number(item.season_number || 0),
+          episodeNumber: Number(item.episode_number || 0),
+          active: Boolean(item.tracked),
+        })
+        : '');
+    return `<a class="discover-upcoming-item${item.tracked ? ' has-tracked' : ''}" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" draggable="false"><div class="discover-upcoming-poster-wrap"><img src="${poster}" alt="${escapeHtml(title)}" loading="eager" fetchpriority="auto" decoding="async" draggable="false" /><span class="upcoming-badge" title="Upcoming" aria-label="Upcoming">${calendarIconTag('upcoming-badge-icon')}</span>${trackBadge ? `<div class="discover-upcoming-track-badge" data-upcoming-index="${itemIndex}">${trackBadge}</div>` : ''}</div><div class="discover-upcoming-title">${escapeHtml(title)}</div><div class="discover-upcoming-date">${escapeHtml(dateText)}</div></a>`;
+  };
+  viewport.innerHTML = `<div id="discover-upcoming-track" class="discover-upcoming-track"><div class="discover-upcoming-set discover-upcoming-set-primary">${items.map((item, index) => card(item, index)).join('')}</div><div class="discover-upcoming-divider" aria-hidden="true"></div><div class="discover-upcoming-set discover-upcoming-set-duplicate">${items.map((item, index) => card(item, index)).join('')}</div></div>`;
+  const track = document.getElementById('discover-upcoming-track');
+  const primary = track?.querySelector('.discover-upcoming-set-primary');
+  const duplicate = track?.querySelector('.discover-upcoming-set-duplicate');
+  const loopWidth = duplicate ? duplicate.offsetLeft : 0;
+  state.discoverCarouselTrackWidth = loopWidth > 0 ? loopWidth : (primary ? primary.scrollWidth : 0);
+  const loopTail = (primary ? primary.scrollWidth : 0);
+  const maxLoopScroll = state.discoverCarouselTrackWidth + loopTail;
+  if (track && state.discoverCarouselTrackWidth > 0) {
+    track.scrollLeft = state.discoverCarouselTrackWidth;
+  }
+  const step = 304;
+  prevBtn.onclick = () => {
+    if (!track) return;
+    if (track.scrollLeft <= 2 && state.discoverCarouselTrackWidth > 0) {
+      track.scrollLeft += state.discoverCarouselTrackWidth;
+    }
+    track.scrollBy({ left: -step, behavior: 'smooth' });
+  };
+  nextBtn.onclick = () => track?.scrollBy({ left: step, behavior: 'smooth' });
+  let pointerDown = false;
+  let dragStartX = 0;
+  let dragStartLeft = 0;
+  let suppressNextClick = false;
+  let activePointerId = null;
+  const onWindowPointerMove = (event) => {
+    if (!pointerDown) return;
+    if (activePointerId !== null && event.pointerId !== activePointerId) return;
+    const dx = event.clientX - dragStartX;
+    if (Math.abs(dx) > 5) state.discoverCarouselDragging = true;
+    track.scrollLeft = dragStartLeft - dx;
+  };
+  const stopDrag = (event) => {
+    if (!pointerDown) return;
+    if (event && activePointerId !== null && event.pointerId !== activePointerId) return;
+    pointerDown = false;
+    activePointerId = null;
+    track?.classList.remove('is-dragging');
+    suppressNextClick = state.discoverCarouselDragging;
+    window.removeEventListener('pointermove', onWindowPointerMove);
+    window.removeEventListener('pointerup', stopDrag);
+    window.removeEventListener('pointercancel', stopDrag);
+  };
+  track?.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    pointerDown = true;
+    activePointerId = event.pointerId;
+    state.discoverCarouselDragging = false;
+    dragStartX = event.clientX;
+    dragStartLeft = track.scrollLeft;
+    track.classList.add('is-dragging');
+    window.addEventListener('pointermove', onWindowPointerMove);
+    window.addEventListener('pointerup', stopDrag);
+    window.addEventListener('pointercancel', stopDrag);
+  });
+  track?.addEventListener('click', (event) => {
+    if (suppressNextClick) {
+      event.preventDefault();
+      event.stopPropagation();
+      suppressNextClick = false;
+    }
+  }, true);
+  track?.querySelectorAll('.discover-upcoming-track-badge .badge-track').forEach((btn) => {
+    btn.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const wrapper = btn.closest('.discover-upcoming-track-badge');
+      const index = Number(wrapper?.dataset.upcomingIndex || -1);
+      const itemRef = Number.isInteger(index) && index >= 0 ? state.discoverUpcomingItems[index] : null;
+      if (!itemRef) return;
+      await handleTrackBadgeToggle(btn, (nextTracked) => {
+        itemRef.tracked = nextTracked;
+        renderDiscoverUpcoming();
+      }, { showModal: false });
+    });
+  });
+  track?.addEventListener('scroll', () => {
+    const width = state.discoverCarouselTrackWidth || 0;
+    if (!width) return;
+    if (track.scrollLeft <= 1) {
+      track.scrollLeft += width;
+      return;
+    }
+    if (track.scrollLeft >= maxLoopScroll) {
+      track.scrollLeft -= width;
+    }
+  }, { passive: true });
+}
+
+async function loadDiscoverUpcoming() {
+  if (state.discoverUpcomingLoading) return;
+  state.discoverUpcomingLoading = true;
+  renderDiscoverUpcoming();
+  const token = ++state.discoverUpcomingToken;
+  try {
+    const data = await api('/api/discovery/upcoming?limit=35');
+    if (token !== state.discoverUpcomingToken) return;
+    state.discoverUpcomingItems = Array.isArray(data?.items) ? data.items : [];
+    const preloadUrls = state.discoverUpcomingItems
+      .map((item) => optimizePosterUrl(item?.poster_url))
+      .filter(Boolean);
+    if (preloadUrls.length) {
+      await Promise.all(preloadUrls.map((url) => preloadImage(url)));
+      if (token !== state.discoverUpcomingToken) return;
+    }
+  } catch {
+    if (token === state.discoverUpcomingToken) state.discoverUpcomingItems = [];
+  } finally {
+    if (token === state.discoverUpcomingToken) {
+      state.discoverUpcomingLoading = false;
+      renderDiscoverUpcoming();
+    }
+  }
+}
+
+function renderDiscover() {
+  state.currentView = 'discover';
+  state.discoverMedia = normalizeDiscoverMedia(state.discoverMedia);
+  state.discoverSortBy = normalizeDiscoverSort(state.discoverSortBy);
+  app.innerHTML = `
+    <div class="discover-page">
+      <div class="topbar discover-topbar">
+        <div class="topbar-title discover-topbar-title">
+          <h2>Discover</h2>
+        </div>
+      </div>
+      <div class="discover-content">
+        <section class="discover-upcoming-wrap">
+          <button id="discover-upcoming-prev" class="discover-upcoming-nav" type="button" aria-label="Previous">&#8249;</button>
+          <div id="discover-upcoming-viewport" class="discover-upcoming-viewport"></div>
+          <button id="discover-upcoming-next" class="discover-upcoming-nav" type="button" aria-label="Next">&#8250;</button>
+        </section>
+        <div class="discover-section-splitter" aria-hidden="true"></div>
+        <section class="discover-controls-row">
+          <div class="discover-controls-left">
+            <select id="discover-status-select" class="secondary-btn discover-status-select">
+              <option value="date" ${state.discoverSortBy === 'date' ? 'selected' : ''}>Date</option>
+              <option value="name" ${state.discoverSortBy === 'name' ? 'selected' : ''}>Name</option>
+              <option value="random" ${state.discoverSortBy === 'random' ? 'selected' : ''}>Random</option>
+            </select>
+          </div>
+          <div class="discover-controls-right">
+            <button id="discover-media-movies" class="toggle-btn has-pill-tooltip ${state.discoverMedia === 'movie' ? 'active' : ''}" type="button" data-tooltip="Movies"><span class="calendar-event-dot movie"></span>Movies</button>
+            <button id="discover-media-shows" class="toggle-btn has-pill-tooltip ${state.discoverMedia === 'show' ? 'active' : ''}" type="button" data-tooltip="Shows"><span class="calendar-event-dot show"></span>Shows</button>
+            <span class="topbar-v-splitter" aria-hidden="true"></span>
+            <button id="discover-missing-only" class="toggle-btn has-pill-tooltip ${state.discoverMissingOnly ? 'active' : ''}" type="button" data-tooltip="Missing">!</button>
+            <button id="discover-new-only" class="toggle-btn has-pill-tooltip ${state.discoverNewOnly ? 'active' : ''}" type="button" data-tooltip="New">NEW</button>
+            <span class="topbar-v-splitter" aria-hidden="true"></span>
+            <button
+              id="discover-tracked-only"
+              class="toggle-btn has-pill-tooltip ${state.discoverTrackedOnly ? 'active' : ''}"
+              type="button"
+              aria-label="Tracked"
+              data-tooltip="Tracked"
+              title="Tracked"
+            >${pinIconTag('calendar-filter-icon')}</button>
+          </div>
+        </section>
+        <div id="discover-feed-loading" class="discover-feed-loading">Loading feed...</div>
+        <section id="discover-feed-list" class="discover-feed-list"></section>
+        <div id="discover-feed-loading-more" class="discover-feed-loading-more hidden">Loading more...</div>
+      </div>
+    </div>
+  `;
+  const statusSelect = document.getElementById('discover-status-select');
+  const moviesBtn = document.getElementById('discover-media-movies');
+  const showsBtn = document.getElementById('discover-media-shows');
+  const missingOnlyBtn = document.getElementById('discover-missing-only');
+  const newOnlyBtn = document.getElementById('discover-new-only');
+  const trackedOnlyBtn = document.getElementById('discover-tracked-only');
+  statusSelect?.addEventListener('change', () => {
+    state.discoverSortBy = normalizeDiscoverSort(statusSelect.value);
+    localStorage.setItem('discoverSortBy', state.discoverSortBy);
+    loadDiscoverFeed(true);
+  });
+  moviesBtn?.addEventListener('click', () => {
+    state.discoverMedia = state.discoverMedia === 'movie' ? 'all' : 'movie';
+    localStorage.setItem('discoverMedia', state.discoverMedia);
+    moviesBtn.classList.toggle('active', state.discoverMedia === 'movie');
+    showsBtn?.classList.toggle('active', state.discoverMedia === 'show');
+    loadDiscoverFeed(true);
+  });
+  showsBtn?.addEventListener('click', () => {
+    state.discoverMedia = state.discoverMedia === 'show' ? 'all' : 'show';
+    localStorage.setItem('discoverMedia', state.discoverMedia);
+    moviesBtn?.classList.toggle('active', state.discoverMedia === 'movie');
+    showsBtn.classList.toggle('active', state.discoverMedia === 'show');
+    loadDiscoverFeed(true);
+  });
+  missingOnlyBtn?.addEventListener('click', () => {
+    const next = !state.discoverMissingOnly;
+    state.discoverMissingOnly = next;
+    if (next) state.discoverNewOnly = false;
+    localStorage.setItem('discoverMissingOnly', state.discoverMissingOnly ? '1' : '0');
+    localStorage.setItem('discoverNewOnly', state.discoverNewOnly ? '1' : '0');
+    missingOnlyBtn.classList.toggle('active', state.discoverMissingOnly);
+    newOnlyBtn?.classList.toggle('active', state.discoverNewOnly);
+    loadDiscoverFeed(true);
+  });
+  newOnlyBtn?.addEventListener('click', () => {
+    const next = !state.discoverNewOnly;
+    state.discoverNewOnly = next;
+    if (next) state.discoverMissingOnly = false;
+    localStorage.setItem('discoverNewOnly', state.discoverNewOnly ? '1' : '0');
+    localStorage.setItem('discoverMissingOnly', state.discoverMissingOnly ? '1' : '0');
+    newOnlyBtn.classList.toggle('active', state.discoverNewOnly);
+    missingOnlyBtn?.classList.toggle('active', state.discoverMissingOnly);
+    loadDiscoverFeed(true);
+  });
+  trackedOnlyBtn?.addEventListener('click', () => {
+    state.discoverTrackedOnly = !state.discoverTrackedOnly;
+    localStorage.setItem('discoverTrackedOnly', state.discoverTrackedOnly ? '1' : '0');
+    trackedOnlyBtn.classList.toggle('active', state.discoverTrackedOnly);
+    loadDiscoverFeed(true);
+  });
+  renderDiscoverUpcoming();
+  renderDiscoverFeedList();
+  loadDiscoverUpcoming();
+  loadDiscoverFeed(true);
+  setupDiscoverInfiniteScroll();
 }
 
 function renderCalendar() {
@@ -1580,6 +2532,25 @@ function renderCalendar() {
                 : '<span class="badge-link badge-download badge-disabled calendar-day-download-btn">Download <span class="badge-icon badge-icon-download">&#8595;</span></span>'
             )
             : '';
+          const playType = type === 'movie' ? 'movie' : 'show';
+          const playTmdbId = type === 'movie'
+            ? Number(event?.tmdb_movie_id || 0)
+            : Number(event?.tmdb_show_id || 0);
+          const trailerBadge = playTmdbId > 0
+            ? `<button type="button" class="badge-link badge-play calendar-day-download-btn calendar-day-trailer-btn" data-play-type="${playType}" data-play-tmdb-id="${playTmdbId}">Trailer ${playIconTag('badge-icon-play')}</button>`
+            : `<span class="badge-link badge-play badge-disabled calendar-day-download-btn calendar-day-trailer-btn">Trailer ${playIconTag('badge-icon-play')}</span>`;
+          const isTracked = Boolean(event?.tracked);
+          const trackKind = type === 'show' ? 'episode' : 'movie';
+          const trackAttrs = type === 'movie'
+            ? `data-track-kind="${trackKind}" data-tmdb-movie-id="${Number(event?.tmdb_movie_id || 0)}"`
+            : `data-track-kind="${trackKind}" data-show-id="${escapeHtml(event?.show_id || '')}" data-season-number="${Number(event?.season_number || 0)}" data-episode-number="${Number(event?.episode_number || 0)}"`;
+          const trackLabel = isTracked ? 'Untrack' : 'Track';
+          const trackBadge = type === 'movie'
+            ? Number(event?.tmdb_movie_id || 0) > 0
+            : Boolean(String(event?.show_id || '').trim()) && Number(event?.season_number || 0) > 0 && Number(event?.episode_number || 0) > 0;
+          const trackButton = trackBadge
+            ? `<button type="button" class="badge-link badge-track calendar-day-download-btn calendar-day-track-btn${isTracked ? ' active' : ''}" data-tracked="${isTracked ? '1' : '0'}" ${trackAttrs}>${trackLabel} ${pinIconTag('pin-icon')}</button>`
+            : `<span class="badge-link badge-track badge-disabled calendar-day-download-btn calendar-day-track-btn">Track ${pinIconTag('pin-icon')}</span>`;
           return `
             <div class="calendar-day-event-item${event?.tracked ? ' is-tracked' : ''}${tmdbUrl ? ' is-clickable' : ''}" data-tmdb-url="${escapeHtml(tmdbUrl)}">
               <span class="calendar-day-event-type-dot ${type}" aria-hidden="true"></span>
@@ -1588,6 +2559,8 @@ function renderCalendar() {
                 <div class="calendar-day-event-title">${escapeHtml(displayTitle)}</div>
                 ${showMeta ? `<div class="calendar-day-event-meta">${escapeHtml(showMeta)}</div>` : ''}
                 <div class="calendar-day-event-date">${escapeHtml(dateText)}</div>
+                ${trailerBadge}
+                ${trackButton}
                 ${downloadBadge}
               </div>
             </div>
@@ -1632,6 +2605,16 @@ function renderCalendar() {
             window.open(tmdbUrl, '_blank', 'noopener,noreferrer');
           });
         });
+        app.querySelectorAll('.calendar-day-track-btn').forEach((btn) => {
+          if (btn.classList.contains('badge-disabled')) return;
+          btn.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            await handleTrackBadgeToggle(btn, () => {
+              renderCalendar();
+            }, { showModal: false });
+          });
+        });
+        bindPlayBadgeClicks(app);
         return;
       }
       const hoverCard = document.createElement('div');
@@ -2783,10 +3766,12 @@ async function renderActors(enableBackgroundRefresh = true) {
           <option value="upcoming" ${state.actorsSortBy === 'upcoming' ? 'selected' : ''}>Upcoming</option>
         </select>
         <button id="actors-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.actorsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
+        <span class="topbar-v-splitter" aria-hidden="true"></span>
         <button id="actors-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.actorsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="actors-missing-filter" class="toggle-btn has-pill-tooltip ${state.actorsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
         <button id="actors-upcoming-filter" class="toggle-btn has-pill-tooltip ${state.actorsUpcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="actors-new-filter" class="toggle-btn has-pill-tooltip ${state.actorsNewOnly ? 'active' : ''}" data-tooltip="New">NEW</button>
+        <span class="topbar-v-splitter" aria-hidden="true"></span>
         <button id="actors-tracked-filter" class="toggle-btn has-pill-tooltip ${state.actorsTrackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
       </div>
     </div>
@@ -2838,7 +3823,6 @@ async function renderActors(enableBackgroundRefresh = true) {
       state.actorsMissingOnly = !state.actorsMissingOnly;
       if (state.actorsMissingOnly) {
         state.actorsInPlexOnly = false;
-        state.actorsTrackedOnly = false;
         state.actorsNewOnly = false;
         state.actorsUpcomingOnly = false;
       }
@@ -2852,7 +3836,6 @@ async function renderActors(enableBackgroundRefresh = true) {
       state.actorsInPlexOnly = !state.actorsInPlexOnly;
       if (state.actorsInPlexOnly) {
         state.actorsMissingOnly = false;
-        state.actorsTrackedOnly = false;
         state.actorsNewOnly = false;
         state.actorsUpcomingOnly = false;
       }
@@ -2864,12 +3847,6 @@ async function renderActors(enableBackgroundRefresh = true) {
   if (actorsTrackedBtn) {
     actorsTrackedBtn.addEventListener('click', () => {
       state.actorsTrackedOnly = !state.actorsTrackedOnly;
-      if (state.actorsTrackedOnly) {
-        state.actorsMissingOnly = false;
-        state.actorsInPlexOnly = false;
-        state.actorsNewOnly = false;
-        state.actorsUpcomingOnly = false;
-      }
       state.actorsVisibleCount = ACTORS_BATCH_SIZE;
       renderActors();
     });
@@ -2882,7 +3859,6 @@ async function renderActors(enableBackgroundRefresh = true) {
       if (state.actorsNewOnly) {
         state.actorsMissingOnly = false;
         state.actorsInPlexOnly = false;
-        state.actorsTrackedOnly = false;
         state.actorsUpcomingOnly = false;
       }
       state.actorsVisibleCount = ACTORS_BATCH_SIZE;
@@ -2896,7 +3872,6 @@ async function renderActors(enableBackgroundRefresh = true) {
       if (state.actorsUpcomingOnly) {
         state.actorsMissingOnly = false;
         state.actorsInPlexOnly = false;
-        state.actorsTrackedOnly = false;
         state.actorsNewOnly = false;
       }
       state.actorsVisibleCount = ACTORS_BATCH_SIZE;
@@ -3291,10 +4266,12 @@ async function renderShows(enableBackgroundRefresh = true) {
           <option value="upcoming" ${state.showsSortBy === 'upcoming' ? 'selected' : ''}>Upcoming</option>
         </select>
         <button id="shows-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${state.showsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
+        <span class="topbar-v-splitter" aria-hidden="true"></span>
         <button id="shows-in-plex-filter" class="toggle-btn has-pill-tooltip ${state.showsInPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="shows-missing-episodes-filter" class="toggle-btn has-pill-tooltip ${state.showsMissingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
         <button id="shows-upcoming-filter" class="toggle-btn has-pill-tooltip ${state.showsUpcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="shows-new-filter" class="toggle-btn has-pill-tooltip ${state.showsNewOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
+        <span class="topbar-v-splitter" aria-hidden="true"></span>
         <button id="shows-tracked-filter" class="toggle-btn has-pill-tooltip ${state.showsTrackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
       </div>
     </div>
@@ -3337,7 +4314,6 @@ async function renderShows(enableBackgroundRefresh = true) {
       state.showsMissingOnly = !state.showsMissingOnly;
       if (state.showsMissingOnly) {
         state.showsInPlexOnly = false;
-        state.showsTrackedOnly = false;
         state.showsNewOnly = false;
         state.showsUpcomingOnly = false;
       }
@@ -3351,7 +4327,6 @@ async function renderShows(enableBackgroundRefresh = true) {
       state.showsInPlexOnly = !state.showsInPlexOnly;
       if (state.showsInPlexOnly) {
         state.showsMissingOnly = false;
-        state.showsTrackedOnly = false;
         state.showsNewOnly = false;
         state.showsUpcomingOnly = false;
       }
@@ -3363,12 +4338,6 @@ async function renderShows(enableBackgroundRefresh = true) {
   if (trackedFilterBtn) {
     trackedFilterBtn.addEventListener('click', () => {
       state.showsTrackedOnly = !state.showsTrackedOnly;
-      if (state.showsTrackedOnly) {
-        state.showsMissingOnly = false;
-        state.showsInPlexOnly = false;
-        state.showsNewOnly = false;
-        state.showsUpcomingOnly = false;
-      }
       state.showsVisibleCount = ACTORS_BATCH_SIZE;
       renderShows();
     });
@@ -3381,7 +4350,6 @@ async function renderShows(enableBackgroundRefresh = true) {
       if (state.showsNewOnly) {
         state.showsMissingOnly = false;
         state.showsInPlexOnly = false;
-        state.showsTrackedOnly = false;
         state.showsUpcomingOnly = false;
       }
       state.showsVisibleCount = ACTORS_BATCH_SIZE;
@@ -3395,7 +4363,6 @@ async function renderShows(enableBackgroundRefresh = true) {
       if (state.showsUpcomingOnly) {
         state.showsMissingOnly = false;
         state.showsInPlexOnly = false;
-        state.showsTrackedOnly = false;
         state.showsNewOnly = false;
       }
       state.showsVisibleCount = ACTORS_BATCH_SIZE;
@@ -3545,6 +4512,11 @@ async function renderShows(enableBackgroundRefresh = true) {
               showId: String(show.show_id),
               active: Boolean(show.tracked),
             },
+            showPlay: true,
+            playMeta: {
+              type: 'show',
+              tmdbId: Number(show.tmdb_show_id || 0),
+            },
             showPlex: true,
             plexUrl: show.plex_web_url || '',
             showDownload: true,
@@ -3576,6 +4548,7 @@ async function renderShows(enableBackgroundRefresh = true) {
           });
         });
       }
+      bindPlayBadgeClicks(card);
       const scanPillBtn = card.querySelector('.show-scan-pill');
       scanPillBtn.addEventListener('click', async (event) => {
         event.stopPropagation();
@@ -3938,10 +4911,12 @@ async function renderShowSeasons(showId) {
       </div>
       <div class="row">
         <button id="seasons-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${seasonsSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
+        <span class="topbar-v-splitter" aria-hidden="true"></span>
         <button id="shows-in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="shows-missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
         <button id="shows-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="shows-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
+        <span class="topbar-v-splitter" aria-hidden="true"></span>
         <button id="shows-tracked-toggle" class="toggle-btn has-pill-tooltip ${trackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
       </div>
     </div>
@@ -3964,9 +4939,9 @@ async function renderShowSeasons(showId) {
     const next = !missingOnly;
     if (next) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
-    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
+    if (trackedOnly) params.set('trackedOnly', '1');
     pushQuery(params);
   });
   document.getElementById('shows-in-plex-toggle').addEventListener('click', () => {
@@ -3974,19 +4949,19 @@ async function renderShowSeasons(showId) {
     const next = !inPlexOnly;
     if (next) params.set('inPlexOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
-    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
+    if (trackedOnly) params.set('trackedOnly', '1');
     pushQuery(params);
   });
   document.getElementById('shows-tracked-toggle').addEventListener('click', () => {
     const params = new URLSearchParams();
     const next = !trackedOnly;
-    if (next) params.set('trackedOnly', '1');
-    else if (missingOnly) params.set('missingOnly', '1');
+    if (missingOnly) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
+    if (next) params.set('trackedOnly', '1');
     pushQuery(params);
   });
   document.getElementById('shows-new-toggle').addEventListener('click', () => {
@@ -3995,8 +4970,8 @@ async function renderShowSeasons(showId) {
     if (next) params.set('newOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
-    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
+    if (trackedOnly) params.set('trackedOnly', '1');
     pushQuery(params);
   });
   document.getElementById('shows-upcoming-toggle').addEventListener('click', () => {
@@ -4005,8 +4980,8 @@ async function renderShowSeasons(showId) {
     if (next) params.set('upcomingOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
-    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
+    if (trackedOnly) params.set('trackedOnly', '1');
     pushQuery(params);
   });
 
@@ -4048,7 +5023,7 @@ async function renderShowSeasons(showId) {
     const isNew = hasNew;
     const isUpcoming = !hasNew && hasUpcoming;
     const isMissing = !hasNew && !hasUpcoming && hasMissing;
-    const seasonReleasedText = formatReleasedDate(season.air_date, null);
+    const seasonReleasedText = formatReleasedDate(season.air_date, season.year);
     const seasonYearFromRelease = Number.parseInt(String(seasonReleasedText || ''), 10);
     const seasonYear = Number.isFinite(seasonYearFromRelease)
       ? seasonYearFromRelease
@@ -4111,6 +5086,7 @@ async function renderShowSeasons(showId) {
         });
       });
     }
+    bindPlayBadgeClicks(card);
     card.addEventListener('click', () => {
       history.pushState({}, '', `/shows/${showId}/seasons/${season.season_number}`);
       handleLocation();
@@ -4164,10 +5140,12 @@ async function renderShowEpisodes(showId, seasonNumber) {
       </div>
       <div class="row">
         <button id="episodes-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${episodesSortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
+        <span class="topbar-v-splitter" aria-hidden="true"></span>
         <button id="episodes-in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="episodes-missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
         <button id="episodes-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="episodes-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New Episodes">NEW</button>
+        <span class="topbar-v-splitter" aria-hidden="true"></span>
         <button id="episodes-tracked-toggle" class="toggle-btn has-pill-tooltip ${trackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
       </div>
     </div>
@@ -4193,9 +5171,9 @@ async function renderShowEpisodes(showId, seasonNumber) {
     const next = !missingOnly;
     if (next) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
-    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
+    if (trackedOnly) params.set('trackedOnly', '1');
     pushQuery(params);
   });
   document.getElementById('episodes-in-plex-toggle').addEventListener('click', () => {
@@ -4203,19 +5181,19 @@ async function renderShowEpisodes(showId, seasonNumber) {
     const next = !inPlexOnly;
     if (next) params.set('inPlexOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
-    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
+    if (trackedOnly) params.set('trackedOnly', '1');
     pushQuery(params);
   });
   document.getElementById('episodes-tracked-toggle').addEventListener('click', () => {
     const params = new URLSearchParams();
     const next = !trackedOnly;
-    if (next) params.set('trackedOnly', '1');
-    else if (missingOnly) params.set('missingOnly', '1');
+    if (missingOnly) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
+    if (next) params.set('trackedOnly', '1');
     pushQuery(params);
   });
   document.getElementById('episodes-new-toggle').addEventListener('click', () => {
@@ -4224,8 +5202,8 @@ async function renderShowEpisodes(showId, seasonNumber) {
     if (next) params.set('newOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
-    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (upcomingOnly) params.set('upcomingOnly', '1');
+    if (trackedOnly) params.set('trackedOnly', '1');
     pushQuery(params);
   });
   document.getElementById('episodes-upcoming-toggle').addEventListener('click', () => {
@@ -4234,8 +5212,8 @@ async function renderShowEpisodes(showId, seasonNumber) {
     if (next) params.set('upcomingOnly', '1');
     else if (missingOnly) params.set('missingOnly', '1');
     else if (inPlexOnly) params.set('inPlexOnly', '1');
-    else if (trackedOnly) params.set('trackedOnly', '1');
     else if (newOnly) params.set('newOnly', '1');
+    if (trackedOnly) params.set('trackedOnly', '1');
     pushQuery(params);
   });
 
@@ -4327,6 +5305,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
         });
       });
     }
+    bindPlayBadgeClicks(card);
     const ignoreToggleBtn = card.querySelector('.ignore-toggle-btn');
     if (ignoreToggleBtn) {
       ignoreToggleBtn.addEventListener('click', async (event) => {
@@ -4450,10 +5429,12 @@ async function renderActorDetail(actorId) {
           <option value="upcoming" ${sortBy === 'upcoming' ? 'selected' : ''}>Upcoming</option>
         </select>
         <button id="movies-sort-dir" class="toggle-btn has-pill-tooltip" title="Toggle sort direction" aria-label="Toggle sort direction" data-tooltip="Sort Direction">${sortDir === 'asc' ? '&#8593;' : '&#8595;'}</button>
+        <span class="topbar-v-splitter" aria-hidden="true"></span>
         <button id="in-plex-toggle" class="toggle-btn has-pill-tooltip ${inPlexOnly ? 'active' : ''}" data-tooltip="In Plex">&#10003;</button>
         <button id="missing-toggle" class="toggle-btn has-pill-tooltip ${missingOnly ? 'active' : ''}" data-tooltip="Missing">!</button>
         <button id="movies-upcoming-toggle" class="toggle-btn has-pill-tooltip ${upcomingOnly ? 'active' : ''}" data-tooltip="Upcoming">${calendarIconTag('calendar-filter-icon')}</button>
         <button id="movies-new-toggle" class="toggle-btn has-pill-tooltip ${newOnly ? 'active' : ''}" data-tooltip="New">NEW</button>
+        <span class="topbar-v-splitter" aria-hidden="true"></span>
         <button id="movies-tracked-toggle" class="toggle-btn has-pill-tooltip ${trackedOnly ? 'active' : ''}" data-tooltip="Tracked">${pinIconTag('calendar-filter-icon')}</button>
       </div>
     </div>
@@ -4497,9 +5478,9 @@ async function renderActorDetail(actorId) {
       const next = !missingOnly;
       if (next) params.set('missingOnly', '1');
       else if (inPlexOnly) params.set('inPlexOnly', '1');
-      else if (trackedOnly) params.set('trackedOnly', '1');
       else if (newOnly) params.set('newOnly', '1');
       else if (upcomingOnly) params.set('upcomingOnly', '1');
+      if (trackedOnly) params.set('trackedOnly', '1');
       params.set('sortBy', sortBy);
       params.set('sortDir', sortDir);
       pushActorDetailQuery(params);
@@ -4513,9 +5494,9 @@ async function renderActorDetail(actorId) {
       const next = !inPlexOnly;
       if (next) params.set('inPlexOnly', '1');
       else if (missingOnly) params.set('missingOnly', '1');
-      else if (trackedOnly) params.set('trackedOnly', '1');
       else if (newOnly) params.set('newOnly', '1');
       else if (upcomingOnly) params.set('upcomingOnly', '1');
+      if (trackedOnly) params.set('trackedOnly', '1');
       params.set('sortBy', sortBy);
       params.set('sortDir', sortDir);
       pushActorDetailQuery(params);
@@ -4526,11 +5507,11 @@ async function renderActorDetail(actorId) {
     moviesTrackedToggle.addEventListener('click', () => {
       const params = new URLSearchParams();
       const next = !trackedOnly;
-      if (next) params.set('trackedOnly', '1');
-      else if (missingOnly) params.set('missingOnly', '1');
+      if (missingOnly) params.set('missingOnly', '1');
       else if (inPlexOnly) params.set('inPlexOnly', '1');
       else if (newOnly) params.set('newOnly', '1');
       else if (upcomingOnly) params.set('upcomingOnly', '1');
+      if (next) params.set('trackedOnly', '1');
       params.set('sortBy', sortBy);
       params.set('sortDir', sortDir);
       pushActorDetailQuery(params);
@@ -4544,8 +5525,8 @@ async function renderActorDetail(actorId) {
       if (next) params.set('newOnly', '1');
       else if (missingOnly) params.set('missingOnly', '1');
       else if (inPlexOnly) params.set('inPlexOnly', '1');
-      else if (trackedOnly) params.set('trackedOnly', '1');
       else if (upcomingOnly) params.set('upcomingOnly', '1');
+      if (trackedOnly) params.set('trackedOnly', '1');
       params.set('sortBy', sortBy);
       params.set('sortDir', sortDir);
       pushActorDetailQuery(params);
@@ -4559,8 +5540,8 @@ async function renderActorDetail(actorId) {
       if (next) params.set('upcomingOnly', '1');
       else if (missingOnly) params.set('missingOnly', '1');
       else if (inPlexOnly) params.set('inPlexOnly', '1');
-      else if (trackedOnly) params.set('trackedOnly', '1');
       else if (newOnly) params.set('newOnly', '1');
+      if (trackedOnly) params.set('trackedOnly', '1');
       params.set('sortBy', sortBy);
       params.set('sortDir', sortDir);
       pushActorDetailQuery(params);
@@ -4736,6 +5717,11 @@ async function renderActorDetail(actorId) {
               tmdbMovieId: Number(movie.tmdb_id || 0),
               active: Boolean(movie.tracked),
             },
+            showPlay: true,
+            playMeta: {
+              type: 'movie',
+              tmdbId: Number(movie.tmdb_id || 0),
+            },
             showPlex: Boolean(movie.in_plex),
             plexUrl: movie.plex_web_url || '',
             showDownload: showMovieDownload,
@@ -4763,6 +5749,7 @@ async function renderActorDetail(actorId) {
           });
         });
       }
+      bindPlayBadgeClicks(card);
       const ignoreToggleBtn = card.querySelector('.ignore-toggle-btn');
       if (ignoreToggleBtn) {
         ignoreToggleBtn.addEventListener('click', async (event) => {
@@ -4880,6 +5867,13 @@ async function renderActorDetail(actorId) {
 }
 
 bootstrap();
+
+
+
+
+
+
+
 
 
 

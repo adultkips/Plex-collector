@@ -36,6 +36,31 @@ def _tmdb_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]
     return response.json()
 
 
+def _select_best_trailer(videos_payload: dict[str, Any]) -> str | None:
+    results = videos_payload.get('results', [])
+    if not isinstance(results, list) or not results:
+        return None
+
+    def score(item: dict[str, Any]) -> tuple[int, int, int]:
+        site = str(item.get('site') or '').lower()
+        video_type = str(item.get('type') or '').lower()
+        official = bool(item.get('official'))
+        return (
+            1 if site == 'youtube' else 0,
+            1 if video_type == 'trailer' else 0,
+            1 if official else 0,
+        )
+
+    sorted_items = sorted(results, key=score, reverse=True)
+    for item in sorted_items:
+        site = str(item.get('site') or '').lower()
+        key = str(item.get('key') or '').strip()
+        if site == 'youtube' and key:
+            return f'https://www.youtube.com/watch?v={key}'
+
+    return None
+
+
 def search_person(name: str, preferred_department: str = 'Acting') -> dict[str, Any] | None:
     payload = _tmdb_get('/search/person', {'query': name, 'include_adult': 'false'})
     results = payload.get('results', [])
@@ -195,3 +220,49 @@ def get_tv_season_episodes(tv_id: int, season_number: int) -> list[dict[str, Any
         )
     items.sort(key=lambda e: e['episode_number'])
     return items
+
+
+def get_movie_trailer_url(movie_id: int) -> str | None:
+    payload = _tmdb_get(f'/movie/{movie_id}/videos')
+    return _select_best_trailer(payload)
+
+
+def get_tv_show_trailer_url(tv_id: int) -> str | None:
+    payload = _tmdb_get(f'/tv/{tv_id}/videos')
+    return _select_best_trailer(payload)
+
+
+def get_movie_credits_summary(movie_id: int) -> dict[str, Any]:
+    payload = _tmdb_get(f'/movie/{movie_id}/credits')
+    cast_items = payload.get('cast', [])
+    crew_items = payload.get('crew', [])
+
+    director: str | None = None
+    writer: str | None = None
+    for crew in crew_items:
+        job = str(crew.get('job') or '').strip().lower()
+        department = str(crew.get('department') or '').strip().lower()
+        name = str(crew.get('name') or '').strip()
+        if not name:
+            continue
+        if director is None and job == 'director':
+            director = name
+        if writer is None and (job in {'writer', 'screenplay', 'story'} or department == 'writing'):
+            writer = name
+        if director and writer:
+            break
+
+    top_cast: list[str] = []
+    for cast in cast_items:
+        name = str(cast.get('name') or '').strip()
+        if not name or name in top_cast:
+            continue
+        top_cast.append(name)
+        if len(top_cast) >= 3:
+            break
+
+    return {
+        'director': director,
+        'writer': writer,
+        'top_cast': top_cast,
+    }
