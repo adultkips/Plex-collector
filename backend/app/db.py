@@ -196,6 +196,29 @@ def init_db() -> None:
             )
             '''
         )
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS untracked_episodes (
+                show_id TEXT NOT NULL,
+                season_number INTEGER NOT NULL,
+                episode_number INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (show_id, season_number, episode_number)
+            )
+            '''
+        )
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS tmdb_movie_credits_cache (
+                tmdb_movie_id INTEGER PRIMARY KEY,
+                director TEXT,
+                writer TEXT,
+                top_cast_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            '''
+        )
         columns = {row[1] for row in conn.execute("PRAGMA table_info('plex_movies')").fetchall()}
         actor_columns = {row[1] for row in conn.execute("PRAGMA table_info('actors')").fetchall()}
         if 'movies_in_plex_count' not in actor_columns:
@@ -371,6 +394,20 @@ def init_db() -> None:
             conn.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS tracked_episodes (
+                    show_id TEXT NOT NULL,
+                    season_number INTEGER NOT NULL,
+                    episode_number INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (show_id, season_number, episode_number)
+                )
+                '''
+            )
+        untracked_episode_columns = {row[1] for row in conn.execute("PRAGMA table_info('untracked_episodes')").fetchall()}
+        if not untracked_episode_columns:
+            conn.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS untracked_episodes (
                     show_id TEXT NOT NULL,
                     season_number INTEGER NOT NULL,
                     episode_number INTEGER NOT NULL,
