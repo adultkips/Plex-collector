@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
@@ -34,6 +34,45 @@ def _tmdb_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]
     response = requests.get(f'{TMDB_BASE}{path}', params=query, timeout=25)
     response.raise_for_status()
     return response.json()
+
+
+_GENRE_CACHE: dict[str, Any] = {'map': None}
+
+
+def _get_movie_genre_map() -> dict[int, str]:
+    cached = _GENRE_CACHE.get('map')
+    if isinstance(cached, dict):
+        return cached
+    payload = _tmdb_get('/genre/movie/list')
+    genres_raw = payload.get('genres', [])
+    mapping: dict[int, str] = {}
+    if isinstance(genres_raw, list):
+        for genre in genres_raw:
+            try:
+                genre_id = int(genre.get('id'))
+            except Exception:
+                continue
+            name = str(genre.get('name') or '').strip()
+            if name:
+                mapping[genre_id] = name
+    _GENRE_CACHE['map'] = mapping
+    return mapping
+
+
+def _genre_names_from_ids(genre_ids: Any) -> list[str]:
+    if not isinstance(genre_ids, list) or not genre_ids:
+        return []
+    genre_map = _get_movie_genre_map()
+    names: list[str] = []
+    for raw_id in genre_ids:
+        try:
+            genre_id = int(raw_id)
+        except Exception:
+            continue
+        name = genre_map.get(genre_id)
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 def _select_best_trailer(videos_payload: dict[str, Any]) -> str | None:
@@ -111,6 +150,7 @@ def get_person_movie_credits(person_id: int, department: str = 'actor') -> list[
             'year': year,
             'release_date': release if release else None,
             'poster_url': f'{TMDB_IMAGE_BASE}{poster_path}' if poster_path else None,
+            'genres': _genre_names_from_ids(movie.get('genre_ids')),
         }
         tmdb_id = item.get('tmdb_id')
         if tmdb_id is not None:
@@ -130,6 +170,14 @@ def get_person_movie_credits(person_id: int, department: str = 'actor') -> list[
             existing['release_date'] = item['release_date']
         if not existing.get('poster_url') and item.get('poster_url'):
             existing['poster_url'] = item['poster_url']
+        existing_genres = existing.get('genres') if isinstance(existing.get('genres'), list) else []
+        item_genres = item.get('genres') if isinstance(item.get('genres'), list) else []
+        if item_genres:
+            merged_genres = list(existing_genres)
+            for genre in item_genres:
+                if genre not in merged_genres:
+                    merged_genres.append(genre)
+            existing['genres'] = merged_genres
         if not existing.get('year') and item.get('year'):
             existing['year'] = item['year']
         if not existing.get('tmdb_id') and item.get('tmdb_id') is not None:

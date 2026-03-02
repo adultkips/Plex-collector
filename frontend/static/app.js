@@ -1,4 +1,4 @@
-ï»¿const app = document.getElementById('app');
+const app = document.getElementById('app');
 const nav = document.getElementById('floating-nav');
 const navDiscover = document.getElementById('nav-discover');
 const navProfile = document.getElementById('nav-profile');
@@ -15,7 +15,7 @@ const PIN_ICON_PATH = "m12 2.75 2.91 5.89 6.5.95-4.7 4.58 1.11 6.47L12 17.58l-5.
 const PLAY_ICON_PATH = "M8 5.14v13.72c0 .76.82 1.24 1.49.87l10.77-6.86a1 1 0 0 0 0-1.74L9.49 4.27A1 1 0 0 0 8 5.14Z";
 const ACTORS_BATCH_SIZE = 80;
 const SCAN_WORKERS_CONCURRENCY = 8; // "Scan workers"
-const ACTOR_INITIAL_FILTERS = ['All', '0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Ã†', 'Ã˜', 'Ã…', '#'];
+const ACTOR_INITIAL_FILTERS = ['All', '0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Æ', 'Ø', 'Å', '#'];
 const DEFAULT_DOWNLOAD_PREFIX = {
   actor_start: '',
   actor_mode: 'encoded_space',
@@ -121,6 +121,20 @@ const state = {
   moviesSearchOpen: false,
   moviesSearchQuery: '',
   moviesInitialFilter: localStorage.getItem('moviesInitialFilter') || 'All',
+  moviesGenreMode: (() => {
+    const stored = (localStorage.getItem('moviesGenreMode') || 'with').toLowerCase();
+    return stored === 'without' ? 'without' : 'with';
+  })(),
+  moviesGenreFilters: (() => {
+    try {
+      const raw = localStorage.getItem('moviesGenreFilters');
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map((value) => String(value || '').trim()).filter(Boolean);
+    } catch {
+      return [];
+    }
+  })(),
   actorsSortBy: (() => {
     const stored = localStorage.getItem('actorsSortBy') || 'name';
     if (stored === 'amount') return 'movies';
@@ -213,6 +227,8 @@ const state = {
 
 const LOCAL_STORAGE_RESET_KEYS = [
   'moviesInitialFilter',
+  'moviesGenreMode',
+  'moviesGenreFilters',
   'actorsSortBy',
   'actorsSortDir',
   'showsSortBy',
@@ -1003,7 +1019,7 @@ function openTrailerModal(videoUrl, options = {}) {
     modal.className = 'trailer-modal';
     modal.innerHTML = `
       <div class="trailer-modal-dialog card" role="dialog" aria-modal="true" aria-label="Trailer">
-        <button id="trailer-modal-close" class="trailer-modal-close" type="button" aria-label="Close">Ã—</button>
+        <button id="trailer-modal-close" class="trailer-modal-close" type="button" aria-label="Close">×</button>
         <div class="trailer-modal-frame-wrap">
           <div id="trailer-modal-empty" class="trailer-modal-empty">
             <div class="trailer-modal-empty-title">Video not found</div>
@@ -1116,7 +1132,7 @@ function getActorInitialBucket(name) {
   if (!firstChar) return '#';
   if (/[0-9]/.test(firstChar)) return '0-9';
   if (/[A-Z]/.test(firstChar)) return firstChar;
-  if (['Ã†', 'Ã˜', 'Ã…'].includes(firstChar)) return firstChar;
+  if (['Æ', 'Ø', 'Å'].includes(firstChar)) return firstChar;
   const normalizedFirstChar = firstChar
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -1125,13 +1141,45 @@ function getActorInitialBucket(name) {
   return '#';
 }
 
+function getMovieGenres(movie) {
+  const raw = movie?.genres;
+  if (Array.isArray(raw)) return raw.map((value) => String(value || '').trim()).filter(Boolean);
+  if (typeof raw === 'string') return raw.split(',').map((value) => value.trim()).filter(Boolean);
+  return [];
+}
+
+function normalizeGenreForCompare(name) {
+  return String(name || '').trim().toLocaleLowerCase();
+}
+
+function getGenreFilterOptions(movies) {
+  const seen = new Map();
+  for (const movie of movies || []) {
+    for (const genre of getMovieGenres(movie)) {
+      const key = normalizeGenreForCompare(genre);
+      if (!key || seen.has(key)) continue;
+      seen.set(key, genre);
+    }
+  }
+  return [...seen.values()].sort((a, b) => a.localeCompare(b));
+}
+
+function moviePassesGenreFilter(movie, selectedGenres, mode) {
+  if (!Array.isArray(selectedGenres) || selectedGenres.length === 0) return true;
+  const selected = new Set(selectedGenres.map(normalizeGenreForCompare));
+  if (!selected.size) return true;
+  const movieGenres = getMovieGenres(movie).map(normalizeGenreForCompare);
+  const hasAnySelected = movieGenres.some((genre) => selected.has(genre));
+  if (mode === 'without') return !hasAnySelected;
+  return hasAnySelected;
+}
 function normalizeActorNameForSort(name) {
   return (name || '')
     .trim()
     .toUpperCase()
-    .replaceAll('Ã†', 'AE')
-    .replaceAll('Ã˜', 'OE')
-    .replaceAll('Ã…', 'AA')
+    .replaceAll('Æ', 'AE')
+    .replaceAll('Ø', 'OE')
+    .replaceAll('Å', 'AA')
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '');
 }
@@ -1387,6 +1435,10 @@ async function handleLocation() {
   if (!path.startsWith('/cast/')) {
     state.moviesSearchOpen = false;
     state.moviesSearchQuery = '';
+    state.moviesGenreMode = 'with';
+    state.moviesGenreFilters = [];
+    localStorage.removeItem('moviesGenreMode');
+    localStorage.removeItem('moviesGenreFilters');
   }
   document.body.classList.remove('calendar-view');
 
@@ -1753,7 +1805,7 @@ function renderDiscoverFeedCard(item, index) {
     ? buildDownloadLink('movie', item.title || '')
     : buildDownloadLink('episode', buildEpisodeKeyword(item.show_title || item.title || '', item.season_number, item.episode_number));
   const episodeLine = item.type === 'show'
-    ? `<div class="discover-feed-episode">Season ${String(Number(item.season_number) || 0).padStart(2, '0')} Â· Episode ${String(Number(item.episode_number) || 0).padStart(2, '0')}</div>`
+    ? `<div class="discover-feed-episode">Season ${String(Number(item.season_number) || 0).padStart(2, '0')} · Episode ${String(Number(item.episode_number) || 0).padStart(2, '0')}</div>`
     : '';
   const directorLine = item.type === 'movie' && String(item.director || '').trim()
     ? `<div class="discover-feed-credit"><span class="discover-feed-credit-label">Director:</span> ${escapeHtml(item.director)}</div>`
@@ -2291,7 +2343,7 @@ function renderCalendar() {
   app.innerHTML = `
     <section class="card calendar-layout-card">
       <div class="calendar-layout-header">
-        <button id="calendar-prev-btn" class="toggle-btn has-pill-tooltip" type="button" aria-label="${navPrevLabel}" data-tooltip="${navPrevLabel}">â€¹</button>
+        <button id="calendar-prev-btn" class="toggle-btn has-pill-tooltip" type="button" aria-label="${navPrevLabel}" data-tooltip="${navPrevLabel}">‹</button>
         <div class="calendar-layout-center">
           <button id="calendar-today-btn" class="secondary-btn" type="button">Today</button>
           <button id="calendar-open-picker" class="calendar-month-year-btn" type="button" aria-label="Choose month and year">${monthLabel}</button>
@@ -2301,7 +2353,7 @@ function renderCalendar() {
             </svg>
           </button>
         </div>
-        <button id="calendar-next-btn" class="toggle-btn has-pill-tooltip" type="button" aria-label="${navNextLabel}" data-tooltip="${navNextLabel}">â€º</button>
+        <button id="calendar-next-btn" class="toggle-btn has-pill-tooltip" type="button" aria-label="${navNextLabel}" data-tooltip="${navNextLabel}">›</button>
       </div>
       ${
         dayViewActive
@@ -2514,7 +2566,7 @@ function renderCalendar() {
               const seasonNo = String(match[2] || '').padStart(2, '0');
               const episodeNo = String(match[3] || '').padStart(2, '0');
               displayTitle = showName || rawTitle;
-              showMeta = `Season ${seasonNo} Â· Episode ${episodeNo}`;
+              showMeta = `Season ${seasonNo} · Episode ${episodeNo}`;
               if (showDownload) {
                 downloadUrl = buildDownloadLink(
                   'episode',
@@ -2649,7 +2701,7 @@ function renderCalendar() {
               const seasonNo = String(match[2] || '').padStart(2, '0');
               const episodeNo = String(match[3] || '').padStart(2, '0');
               displayTitle = showName || rawTitle;
-              displayMeta = `Season ${seasonNo} Â· Episode ${episodeNo}`;
+              displayMeta = `Season ${seasonNo} · Episode ${episodeNo}`;
             }
           }
           hoverCard.innerHTML = `
@@ -2698,9 +2750,9 @@ function openCalendarMonthYearPicker(initialYear, initialMonth, onSelect) {
   modal.innerHTML = `
     <div class="calendar-picker-card" role="dialog" aria-modal="true" aria-label="Choose month and year">
       <div class="calendar-picker-header">
-        <button id="calendar-picker-back" class="toggle-btn hidden" type="button" aria-label="Back to years">â€¹</button>
+        <button id="calendar-picker-back" class="toggle-btn hidden" type="button" aria-label="Back to years">‹</button>
         <h3 id="calendar-picker-title">Choose month</h3>
-        <button id="calendar-picker-close" class="toggle-btn" type="button" aria-label="Close">Ã—</button>
+        <button id="calendar-picker-close" class="toggle-btn" type="button" aria-label="Close">×</button>
       </div>
       <div id="calendar-picker-body" class="calendar-picker-body"></div>
       <div class="calendar-picker-footer">
@@ -3756,7 +3808,7 @@ async function renderActors(enableBackgroundRefresh = true) {
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 1-4.24 10.24A6 6 0 0 1 10 4m0-2a8 8 0 1 0 5.29 14l4.85 4.85 1.41-1.41-4.85-4.85A8 8 0 0 0 10 2Z"/></svg>
           </button>
           <input id="actors-search-input" class="search-input" type="text" placeholder="Search ${roleLabel.toLowerCase()}" value="${state.actorsSearchQuery}" />
-          <button id="actors-search-clear" class="search-clear-btn ${state.actorsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">Ã—</button>
+          <button id="actors-search-clear" class="search-clear-btn ${state.actorsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
         </div>
         <select id="actors-sort-by" class="secondary-btn" aria-label="Sort cast by">
           <option value="movies" ${state.actorsSortBy === 'movies' ? 'selected' : ''}>Movies</option>
@@ -3779,7 +3831,7 @@ async function renderActors(enableBackgroundRefresh = true) {
       ${(() => {
         const initials = new Set(state.actors.map((actor) => getActorInitialBucket(actor.name)));
         const dynamicFilters = ACTOR_INITIAL_FILTERS.filter((key) => {
-          if (['Ã†', 'Ã˜', 'Ã…'].includes(key)) {
+          if (['Æ', 'Ø', 'Å'].includes(key)) {
             return initials.has(key);
           }
           return true;
@@ -4255,7 +4307,7 @@ async function renderShows(enableBackgroundRefresh = true) {
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 1-4.24 10.24A6 6 0 0 1 10 4m0-2a8 8 0 1 0 5.29 14l4.85 4.85 1.41-1.41-4.85-4.85A8 8 0 0 0 10 2Z"/></svg>
           </button>
           <input id="shows-search-input" class="search-input" type="text" placeholder="Search shows" value="${state.showsSearchQuery}" />
-          <button id="shows-search-clear" class="search-clear-btn ${state.showsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">Ã—</button>
+          <button id="shows-search-clear" class="search-clear-btn ${state.showsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
         </div>
         <select id="shows-sort-by" class="secondary-btn" aria-label="Sort shows by">
           <option value="date" ${state.showsSortBy === 'date' ? 'selected' : ''}>Date</option>
@@ -4279,7 +4331,7 @@ async function renderShows(enableBackgroundRefresh = true) {
       ${(() => {
         const initials = new Set(state.shows.map((show) => getActorInitialBucket(show.title)));
         const dynamicFilters = ACTOR_INITIAL_FILTERS.filter((key) => {
-          if (['Ã†', 'Ã˜', 'Ã…'].includes(key)) return initials.has(key);
+          if (['Æ', 'Ø', 'Å'].includes(key)) return initials.has(key);
           return true;
         });
         if (!dynamicFilters.includes(state.showsInitialFilter)) {
@@ -5419,7 +5471,7 @@ async function renderActorDetail(actorId) {
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 1-4.24 10.24A6 6 0 0 1 10 4m0-2a8 8 0 1 0 5.29 14l4.85 4.85 1.41-1.41-4.85-4.85A8 8 0 0 0 10 2Z"/></svg>
           </button>
           <input id="movies-search-input" class="search-input" type="text" placeholder="Search movies" value="${state.moviesSearchQuery}" />
-          <button id="movies-search-clear" class="search-clear-btn ${state.moviesSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">Ã—</button>
+          <button id="movies-search-clear" class="search-clear-btn ${state.moviesSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
         </div>
         <select id="movies-sort-by" class="secondary-btn" aria-label="Sort movies by">
           <option value="date" ${sortBy === 'date' ? 'selected' : ''}>Date</option>
@@ -5442,7 +5494,7 @@ async function renderActorDetail(actorId) {
       ${(() => {
         const initials = new Set(data.items.map((movie) => getActorInitialBucket(movie.title)));
         const dynamicFilters = ACTOR_INITIAL_FILTERS.filter((key) => {
-          if (['Ã†', 'Ã˜', 'Ã…'].includes(key)) return initials.has(key);
+          if (['Æ', 'Ø', 'Å'].includes(key)) return initials.has(key);
           return true;
         });
         if (!dynamicFilters.includes(state.moviesInitialFilter)) {
@@ -5454,6 +5506,7 @@ async function renderActorDetail(actorId) {
           .join('');
       })()}
     </div>
+    <div class="movies-genre-filter" id="movies-genre-filter"></div>
     <section class="grid" id="movies-grid"></section>
     ${showCreateCollection ? '<button id="create-collection-btn" class="collection-pill-btn"><span class="btn-plus-icon" aria-hidden="true">+</span><span>Create Collection</span></button>' : ''}
   `;
@@ -5609,6 +5662,7 @@ async function renderActorDetail(actorId) {
 
   const grid = document.getElementById('movies-grid');
   const alphabetFilterEl = document.getElementById('movies-alphabet-filter');
+  const moviesGenreFilterEl = document.getElementById('movies-genre-filter');
   if (!data.items.length) {
     grid.innerHTML = '<div class="empty">No movies found.</div>';
     return;
@@ -5654,15 +5708,47 @@ async function renderActorDetail(actorId) {
     sortedMovies.reverse();
   }
 
+  const genreOptions = getGenreFilterOptions(sortedMovies);
+  const allowedGenreSet = new Set(genreOptions.map(normalizeGenreForCompare));
+  state.moviesGenreFilters = state.moviesGenreFilters.filter((genre) => allowedGenreSet.has(normalizeGenreForCompare(genre)));
+
+  const persistMoviesGenreFilterState = () => {
+    localStorage.setItem('moviesGenreMode', state.moviesGenreMode);
+    localStorage.setItem('moviesGenreFilters', JSON.stringify(state.moviesGenreFilters));
+  };
+
+  const renderMoviesGenreFilter = () => {
+    if (!moviesGenreFilterEl) return;
+    if (!genreOptions.length) {
+      moviesGenreFilterEl.innerHTML = '';
+      return;
+    }
+    const selectedLookup = new Set(state.moviesGenreFilters.map(normalizeGenreForCompare));
+    moviesGenreFilterEl.innerHTML = `
+      <div class="movies-genre-filter-inner">
+        <div class="movies-genre-mode-toggle">
+          <button class="genre-mode-btn ${state.moviesGenreMode === 'with' ? 'active' : ''}" type="button" data-mode="with">With</button>
+          <button class="genre-mode-btn ${state.moviesGenreMode === 'without' ? 'active' : ''}" type="button" data-mode="without">Without</button>
+        </div>
+        <div class="movies-genre-pills">
+          ${genreOptions.map((genre) => {
+            const active = selectedLookup.has(normalizeGenreForCompare(genre));
+            return `<button class="movie-genre-filter-pill ${active ? 'active' : ''}" type="button" data-genre="${escapeHtml(genre)}">${escapeHtml(genre)}</button>`;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  };
   const renderMoviesGrid = () => {
     const query = state.moviesSearchQuery.trim().toLowerCase();
     const isSearching = query.length > 0;
     const filteredByInitial = state.moviesInitialFilter === 'All'
       ? sortedMovies
       : sortedMovies.filter((movie) => getActorInitialBucket(movie.title) === state.moviesInitialFilter);
+    const filteredByGenre = filteredByInitial.filter((movie) => moviePassesGenreFilter(movie, state.moviesGenreFilters, state.moviesGenreMode));
     const visible = query
-      ? sortedMovies.filter((movie) => (movie.title || '').toLowerCase().includes(query))
-      : filteredByInitial;
+      ? filteredByGenre.filter((movie) => (movie.title || '').toLowerCase().includes(query))
+      : filteredByGenre;
     const scopedVisible = trackedOnly ? visible.filter((movie) => Boolean(movie.tracked)) : visible;
 
     for (const button of alphabetFilterEl.querySelectorAll('.alpha-btn')) {
@@ -5678,6 +5764,7 @@ async function renderActorDetail(actorId) {
       grid.innerHTML = '<div class="empty">No movies found.</div>';
       return;
     }
+    const selectedGenreLookup = new Set(state.moviesGenreFilters.map(normalizeGenreForCompare));
     for (const movie of scopedVisible) {
       const card = document.createElement('article');
       const isNew = movie.status === 'new';
@@ -5731,6 +5818,9 @@ async function renderActorDetail(actorId) {
         <div class="caption">
           <div class="name">${movie.title}</div>
           <div class="year">${releaseLabel}</div>
+          <div class="movie-genre-pills">
+            ${getMovieGenres(movie).map((genre) => `<button class="movie-genre-pill ${selectedGenreLookup.has(normalizeGenreForCompare(genre)) ? 'active' : ''}" type="button" data-genre="${escapeHtml(genre)}">${escapeHtml(genre)}</button>`).join('')}
+          </div>
         </div>
       `;
       if (tmdbUrl) {
@@ -5749,6 +5839,29 @@ async function renderActorDetail(actorId) {
           });
         });
       }
+      card.querySelectorAll('.movie-genre-pill').forEach((genreBtn) => {
+        genreBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const genre = String(genreBtn.dataset.genre || '').trim();
+          if (!genre) return;
+          const key = normalizeGenreForCompare(genre);
+          const next = [];
+          let exists = false;
+          for (const item of state.moviesGenreFilters) {
+            if (normalizeGenreForCompare(item) === key) {
+              exists = true;
+            } else {
+              next.push(item);
+            }
+          }
+          if (!exists) next.push(genre);
+          state.moviesGenreFilters = next;
+          persistMoviesGenreFilterState();
+          renderMoviesGenreFilter();
+          renderMoviesGrid();
+        });
+      });
       bindPlayBadgeClicks(card);
       const ignoreToggleBtn = card.querySelector('.ignore-toggle-btn');
       if (ignoreToggleBtn) {
@@ -5825,6 +5938,40 @@ async function renderActorDetail(actorId) {
     renderMoviesGrid();
   });
 
+  moviesGenreFilterEl?.addEventListener('click', (event) => {
+    const modeBtn = event.target.closest('.genre-mode-btn');
+    if (modeBtn) {
+      const nextMode = modeBtn.dataset.mode === 'without' ? 'without' : 'with';
+      if (nextMode !== state.moviesGenreMode) {
+        state.moviesGenreMode = nextMode;
+        persistMoviesGenreFilterState();
+        renderMoviesGenreFilter();
+        renderMoviesGrid();
+      }
+      return;
+    }
+    const genreBtn = event.target.closest('.movie-genre-filter-pill');
+    if (!genreBtn) return;
+    const genre = String(genreBtn.dataset.genre || '').trim();
+    if (!genre) return;
+    const key = normalizeGenreForCompare(genre);
+    const next = [];
+    let exists = false;
+    for (const item of state.moviesGenreFilters) {
+      if (normalizeGenreForCompare(item) === key) {
+        exists = true;
+      } else {
+        next.push(item);
+      }
+    }
+    if (!exists) next.push(genre);
+    state.moviesGenreFilters = next;
+    persistMoviesGenreFilterState();
+    renderMoviesGenreFilter();
+    renderMoviesGrid();
+  });
+
+
   const moviesSearchControl = document.getElementById('movies-search-control');
   const moviesSearchToggle = document.getElementById('movies-search-toggle');
   const moviesSearchInput = document.getElementById('movies-search-input');
@@ -5862,6 +6009,7 @@ async function renderActorDetail(actorId) {
     updateMoviesSearchClear();
   });
 
+  renderMoviesGenreFilter();
   updateMoviesSearchClear();
   renderMoviesGrid();
 }

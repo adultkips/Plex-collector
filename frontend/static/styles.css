@@ -2330,3 +2330,115 @@ body.calendar-view .calendar-day-events {
   }
 }
 
+
+.movies-genre-filter {
+  margin-top: 8px;
+}
+
+.movies-genre-filter-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+
+.movies-genre-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 85%, #000 15%);
+}
+
+.genre-mode-btn {
+  border: 0;
+  border-radius: 999px;
+  padding: 5px 12px;
+  min-width: 78px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.genre-mode-btn.active {
+  background: var(--accent);
+  color: #1a1200;
+}
+
+.movies-genre-pills,
+.movie-genre-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.movies-genre-pills {
+  justify-content: center;
+}
+
+.movie-genre-pills {
+  margin-top: 8px;
+}
+
+.movie-genre-filter-pill,
+.movie-genre-pill {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: color-mix(in srgb, var(--surface) 82%, #000 18%);
+  color: var(--text);
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.movie-genre-filter-pill.active,
+.movie-genre-pill.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a1200;
+}
+
+/* Movies genre pills: toned down under release date */
+.movie-genre-pills {
+  margin-top: 6px;
+}
+
+.movie-genre-filter-pill,
+.movie-genre-pill {
+  border: 1px solid color-mix(in srgb, var(--border) 84%, #000 16%);
+  padding: 3px 8px;
+  background: color-mix(in srgb, var(--surface) 92%, #000 8%);
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.movie-genre-filter-pill.active,
+.movie-genre-pill.active {
+  background: color-mix(in srgb, var(--accent) 20%, var(--surface) 80%);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border) 45%);
+  color: var(--text);
+}
+
+/* Keep genre filter pills (under A-Z) at normal prominence */
+.movie-genre-filter-pill {
+  border: 1px solid var(--border);
+  padding: 4px 9px;
+  background: color-mix(in srgb, var(--surface) 82%, #000 18%);
+  color: var(--text);
+  font-size: 0.72rem;
+}
+
+.movie-genre-filter-pill.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a1200;
+}
+
+
+
+
+
