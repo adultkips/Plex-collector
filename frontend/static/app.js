@@ -13,9 +13,9 @@ const SCAN_ICON_PATH = "M20 5v5h-5l1.9-1.9A6.98 6.98 0 0 0 12 6a7 7 0 0 0-6.93 6
 const CALENDAR_ICON_PATH = "M7 2h2v2h6V2h2v2h3v18H4V4h3V2Zm11 8H6v10h12V10Zm0-4H6v2h12V6Z";
 const PIN_ICON_PATH = "m12 2.75 2.91 5.89 6.5.95-4.7 4.58 1.11 6.47L12 17.58l-5.82 3.06 1.11-6.47-4.7-4.58 6.5-.95L12 2.75Z";
 const PLAY_ICON_PATH = "M8 5.14v13.72c0 .76.82 1.24 1.49.87l10.77-6.86a1 1 0 0 0 0-1.74L9.49 4.27A1 1 0 0 0 8 5.14Z";
-const ACTORS_BATCH_SIZE = 80;
+const ACTORS_BATCH_SIZE = 60;
 const SCAN_WORKERS_CONCURRENCY = 8; // "Scan workers"
-const ACTOR_INITIAL_FILTERS = ['All', '0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Æ', 'Ø', 'Å', '#'];
+const ACTOR_INITIAL_FILTERS = ['All', '0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '\u00c6', '\u00d8', '\u00c5', '#'];
 const DEFAULT_DOWNLOAD_PREFIX = {
   actor_start: '',
   actor_mode: 'encoded_space',
@@ -77,6 +77,7 @@ const SHOULD_RESTORE_LAST_ROUTE_ON_BOOT = (() => {
   }
 })();
 let hasCheckedBootRouteRestore = false;
+let scanModalAutoCloseTimer = 0;
 
 function readCalendarCursorFromStorage() {
   try {
@@ -102,6 +103,11 @@ function getCastRoleFromQuery() {
 function getActorsCacheKey(role) {
   const normalized = CAST_ROLES.includes(role) ? role : 'actor';
   return `${CACHE_KEYS.actors}_${normalized}`;
+}
+
+function getActorDetailCacheKey(actorId, role) {
+  const normalizedRole = CAST_ROLES.includes(role) ? role : 'actor';
+  return `${normalizedRole}:${String(actorId || '').trim()}`;
 }
 
 const state = {
@@ -166,6 +172,10 @@ const state = {
   showsEpisodesTrackedOnly: false,
   showsInitialFilter: localStorage.getItem('showsInitialFilter') || 'All',
   showsVisibleCount: ACTORS_BATCH_SIZE,
+  showSeasonsVisibleCount: ACTORS_BATCH_SIZE,
+  showSeasonsVisibleKey: '',
+  showEpisodesVisibleCount: ACTORS_BATCH_SIZE,
+  showEpisodesVisibleKey: '',
   showsImageObserver: null,
   showsImageQueueToken: 0,
   showsImageQueueRunning: false,
@@ -175,8 +185,11 @@ const state = {
   showSeasonsCache: {},
   showEpisodesCache: {},
   showPrefetchControllers: new Set(),
+  actorDetailCache: {},
   actorsInitialFilter: localStorage.getItem('actorsInitialFilter') || 'All',
   actorsVisibleCount: ACTORS_BATCH_SIZE,
+  moviesVisibleCount: ACTORS_BATCH_SIZE,
+  moviesVisibleKey: '',
   castRole: localStorage.getItem(CAST_ROLE_STORAGE_KEY) || '',
   actorsImageObserver: null,
   imageCacheKey: localStorage.getItem('imageCacheKey') || '1',
@@ -221,6 +234,8 @@ const state = {
   discoverTrailerPlaybackRaf: 0,
   discoverTrailerScrollHandler: null,
   discoverTrailerResizeHandler: null,
+  autoLoadMoreObserver: null,
+  routeRenderToken: 0,
   currentPathname: window.location.pathname,
   currentRouteKey: `${window.location.pathname}${window.location.search || ''}`,
 };
@@ -591,6 +606,7 @@ function clearPrimaryDataCaches() {
   }
   clearPersistentCache(CACHE_KEYS.shows);
   clearShowDetailPersistentCaches();
+  state.actorDetailCache = {};
   state.profileLastRefreshAt = 0;
   state.actorsLastRefreshAt = 0;
   state.showsLastRefreshAt = 0;
@@ -661,6 +677,15 @@ function applyImageFallback(img, fallbackSrc) {
 
 function sanitizeDownloadQuery(title) {
   return (title || '')
+    .replaceAll('\u00c6', 'AE')
+    .replaceAll('\u00e6', 'ae')
+    .replaceAll('\u00d8', 'OE')
+    .replaceAll('\u00f8', 'oe')
+    .replaceAll('\u00c5', 'AA')
+    .replaceAll('\u00e5', 'aa')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/['\u2019]/g, '')
     .replace(/[^a-zA-Z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -955,7 +980,7 @@ async function handleTrackBadgeToggle(buttonEl, applyTrackedState, options = {})
       invalidateShowDetailCaches(showId);
     }
     if (showModal) {
-      showScanSuccessModal(buildTrackModalMessage(kind, result, nextTracked), true);
+      showScanSuccessModal(buildTrackModalMessage(kind, result, nextTracked), false, 850);
     }
   } catch (error) {
     if (showModal) {
@@ -1019,7 +1044,7 @@ function openTrailerModal(videoUrl, options = {}) {
     modal.className = 'trailer-modal';
     modal.innerHTML = `
       <div class="trailer-modal-dialog card" role="dialog" aria-modal="true" aria-label="Trailer">
-        <button id="trailer-modal-close" class="trailer-modal-close" type="button" aria-label="Close">×</button>
+        <button id="trailer-modal-close" class="trailer-modal-close" type="button" aria-label="Close">&times;</button>
         <div class="trailer-modal-frame-wrap">
           <div id="trailer-modal-empty" class="trailer-modal-empty">
             <div class="trailer-modal-empty-title">Video not found</div>
@@ -1132,7 +1157,7 @@ function getActorInitialBucket(name) {
   if (!firstChar) return '#';
   if (/[0-9]/.test(firstChar)) return '0-9';
   if (/[A-Z]/.test(firstChar)) return firstChar;
-  if (['Æ', 'Ø', 'Å'].includes(firstChar)) return firstChar;
+  if (['\u00c6', '\u00d8', '\u00c5'].includes(firstChar)) return firstChar;
   const normalizedFirstChar = firstChar
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -1177,9 +1202,9 @@ function normalizeActorNameForSort(name) {
   return (name || '')
     .trim()
     .toUpperCase()
-    .replaceAll('Æ', 'AE')
-    .replaceAll('Ø', 'OE')
-    .replaceAll('Å', 'AA')
+    .replaceAll('\u00c6', 'AE')
+    .replaceAll('\u00d8', 'OE')
+    .replaceAll('\u00c5', 'AA')
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '');
 }
@@ -1399,6 +1424,47 @@ function restoreRouteScrollPosition(routeKey) {
   return true;
 }
 
+function isActiveRouteRender(routeKey, routeRenderToken) {
+  return state.currentRouteKey === routeKey && state.routeRenderToken === routeRenderToken;
+}
+
+function formatTopbarTotals(totalCount, shownCount) {
+  const total = Number.isFinite(Number(totalCount)) ? Math.max(0, Number(totalCount)) : 0;
+  const shown = Number.isFinite(Number(shownCount)) ? Math.max(0, Number(shownCount)) : 0;
+  return `Total: ${total} | Shown: ${shown}`;
+}
+
+function setTopbarTotals(elementId, totalCount, shownCount) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  el.textContent = formatTopbarTotals(totalCount, shownCount);
+}
+
+function disconnectAutoLoadMoreObserver() {
+  if (!state.autoLoadMoreObserver) return;
+  try {
+    state.autoLoadMoreObserver.disconnect();
+  } catch {}
+  state.autoLoadMoreObserver = null;
+}
+
+function setupAutoLoadMore(triggerId, onLoadMore) {
+  disconnectAutoLoadMoreObserver();
+  const trigger = document.getElementById(triggerId);
+  if (!trigger || typeof onLoadMore !== 'function') return false;
+  if (!('IntersectionObserver' in window)) return false;
+  state.autoLoadMoreObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      disconnectAutoLoadMoreObserver();
+      onLoadMore();
+      break;
+    }
+  }, { rootMargin: '320px 0px' });
+  state.autoLoadMoreObserver.observe(trigger);
+  return true;
+}
+
 async function handleLocation() {
   const previousPath = state.currentPathname || '';
   const previousRouteKey = state.currentRouteKey || '';
@@ -1407,10 +1473,12 @@ async function handleLocation() {
   }
   cancelShowPrefetches();
   resetShowImageQueue();
+  disconnectAutoLoadMoreObserver();
   const path = window.location.pathname;
   const routeKey = `${path}${window.location.search || ''}`;
   state.currentPathname = path;
   state.currentRouteKey = routeKey;
+  const routeRenderToken = ++state.routeRenderToken;
   const shouldTryBootRouteRestore = !hasCheckedBootRouteRestore && SHOULD_RESTORE_LAST_ROUTE_ON_BOOT && path === '/';
   hasCheckedBootRouteRestore = true;
   if (shouldTryBootRouteRestore) {
@@ -1469,6 +1537,7 @@ async function handleLocation() {
     setFullWidthGridMode(false);
     setNavVisible(true);
     await renderDiscover();
+    if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
     const fromDetail = previousPath.startsWith('/cast/') || previousPath.startsWith('/shows/');
     if (!(fromDetail && restoreRouteScrollPosition(routeKey))) {
       scrollToPageTop();
@@ -1488,7 +1557,8 @@ async function handleLocation() {
       localStorage.setItem(CAST_ROLE_STORAGE_KEY, detailRole);
     }
     const actorId = path.split('/').pop();
-    await renderActorDetail(actorId);
+    await renderActorDetail(actorId, routeKey, routeRenderToken);
+    if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
     scrollToPageTop();
     setActiveNav('actors');
     return;
@@ -1502,7 +1572,8 @@ async function handleLocation() {
     const roleFromQuery = getCastRoleFromQuery();
     state.castRole = roleFromQuery;
     if (roleFromQuery) localStorage.setItem(CAST_ROLE_STORAGE_KEY, roleFromQuery);
-    await renderActors();
+    await renderActors(true, routeKey, routeRenderToken);
+    if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
     const fromCastDetail = previousPath.startsWith('/cast/');
     if (!(fromCastDetail && restoreRouteScrollPosition(routeKey))) {
       scrollToPageTop();
@@ -1519,11 +1590,12 @@ async function handleLocation() {
     const seasonMatch = path.match(/^\/shows\/([^/]+)\/seasons\/(\d+)$/);
     if (seasonMatch) {
       const [, showId, seasonNumber] = seasonMatch;
-      await renderShowEpisodes(showId, Number(seasonNumber));
+      await renderShowEpisodes(showId, Number(seasonNumber), routeKey, routeRenderToken);
     } else {
       const showId = path.split('/')[2];
-      await renderShowSeasons(showId);
+      await renderShowSeasons(showId, routeKey, routeRenderToken);
     }
+    if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
     scrollToPageTop();
     setActiveNav('shows');
     return;
@@ -1534,7 +1606,8 @@ async function handleLocation() {
     persistLastShowsRoute(`${path}${window.location.search || ''}`);
     setFullWidthGridMode(true);
     setNavVisible(true);
-    await renderShows();
+    await renderShows(true, routeKey, routeRenderToken);
+    if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
     const fromShowDetail = previousPath.startsWith('/shows/');
     if (!(fromShowDetail && restoreRouteScrollPosition(routeKey))) {
       scrollToPageTop();
@@ -1559,7 +1632,8 @@ async function handleLocation() {
   persistLastRoute('/profile');
   setFullWidthGridMode(false);
   setNavVisible(true);
-  await renderProfile();
+  await renderProfile(true, routeKey, routeRenderToken);
+  if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
   scrollToPageTop();
   setActiveNav('profile');
 }
@@ -1805,7 +1879,7 @@ function renderDiscoverFeedCard(item, index) {
     ? buildDownloadLink('movie', item.title || '')
     : buildDownloadLink('episode', buildEpisodeKeyword(item.show_title || item.title || '', item.season_number, item.episode_number));
   const episodeLine = item.type === 'show'
-    ? `<div class="discover-feed-episode">Season ${String(Number(item.season_number) || 0).padStart(2, '0')} · Episode ${String(Number(item.episode_number) || 0).padStart(2, '0')}</div>`
+    ? `<div class="discover-feed-episode">Season ${String(Number(item.season_number) || 0).padStart(2, '0')} &middot; Episode ${String(Number(item.episode_number) || 0).padStart(2, '0')}</div>`
     : '';
   const directorLine = item.type === 'movie' && String(item.director || '').trim()
     ? `<div class="discover-feed-credit"><span class="discover-feed-credit-label">Director:</span> ${escapeHtml(item.director)}</div>`
@@ -1899,7 +1973,7 @@ function bindDiscoverFeedListInteractions(listEl) {
       await handleTrackBadgeToggle(btn, (nextTracked) => {
         itemRef.tracked = nextTracked;
         renderDiscoverFeedList();
-      }, { showModal: false });
+      });
     });
   });
   bindPlayBadgeClicks(listEl);
@@ -2130,7 +2204,7 @@ function renderDiscoverUpcoming() {
       await handleTrackBadgeToggle(btn, (nextTracked) => {
         itemRef.tracked = nextTracked;
         renderDiscoverUpcoming();
-      }, { showModal: false });
+      });
     });
   });
   track?.addEventListener('scroll', () => {
@@ -2343,7 +2417,7 @@ function renderCalendar() {
   app.innerHTML = `
     <section class="card calendar-layout-card">
       <div class="calendar-layout-header">
-        <button id="calendar-prev-btn" class="toggle-btn has-pill-tooltip" type="button" aria-label="${navPrevLabel}" data-tooltip="${navPrevLabel}">‹</button>
+        <button id="calendar-prev-btn" class="toggle-btn has-pill-tooltip" type="button" aria-label="${navPrevLabel}" data-tooltip="${navPrevLabel}">&lsaquo;</button>
         <div class="calendar-layout-center">
           <button id="calendar-today-btn" class="secondary-btn" type="button">Today</button>
           <button id="calendar-open-picker" class="calendar-month-year-btn" type="button" aria-label="Choose month and year">${monthLabel}</button>
@@ -2353,7 +2427,7 @@ function renderCalendar() {
             </svg>
           </button>
         </div>
-        <button id="calendar-next-btn" class="toggle-btn has-pill-tooltip" type="button" aria-label="${navNextLabel}" data-tooltip="${navNextLabel}">›</button>
+        <button id="calendar-next-btn" class="toggle-btn has-pill-tooltip" type="button" aria-label="${navNextLabel}" data-tooltip="${navNextLabel}">&rsaquo;</button>
       </div>
       ${
         dayViewActive
@@ -2566,7 +2640,7 @@ function renderCalendar() {
               const seasonNo = String(match[2] || '').padStart(2, '0');
               const episodeNo = String(match[3] || '').padStart(2, '0');
               displayTitle = showName || rawTitle;
-              showMeta = `Season ${seasonNo} · Episode ${episodeNo}`;
+              showMeta = `Season ${seasonNo} \u00b7 Episode ${episodeNo}`;
               if (showDownload) {
                 downloadUrl = buildDownloadLink(
                   'episode',
@@ -2663,7 +2737,7 @@ function renderCalendar() {
             event.stopPropagation();
             await handleTrackBadgeToggle(btn, () => {
               renderCalendar();
-            }, { showModal: false });
+            });
           });
         });
         bindPlayBadgeClicks(app);
@@ -2701,7 +2775,7 @@ function renderCalendar() {
               const seasonNo = String(match[2] || '').padStart(2, '0');
               const episodeNo = String(match[3] || '').padStart(2, '0');
               displayTitle = showName || rawTitle;
-              displayMeta = `Season ${seasonNo} · Episode ${episodeNo}`;
+              displayMeta = `Season ${seasonNo} \u00b7 Episode ${episodeNo}`;
             }
           }
           hoverCard.innerHTML = `
@@ -2750,9 +2824,9 @@ function openCalendarMonthYearPicker(initialYear, initialMonth, onSelect) {
   modal.innerHTML = `
     <div class="calendar-picker-card" role="dialog" aria-modal="true" aria-label="Choose month and year">
       <div class="calendar-picker-header">
-        <button id="calendar-picker-back" class="toggle-btn hidden" type="button" aria-label="Back to years">‹</button>
+        <button id="calendar-picker-back" class="toggle-btn hidden" type="button" aria-label="Back to years">&lsaquo;</button>
         <h3 id="calendar-picker-title">Choose month</h3>
-        <button id="calendar-picker-close" class="toggle-btn" type="button" aria-label="Close">×</button>
+        <button id="calendar-picker-close" class="toggle-btn" type="button" aria-label="Close">&times;</button>
       </div>
       <div id="calendar-picker-body" class="calendar-picker-body"></div>
       <div class="calendar-picker-footer">
@@ -2963,14 +3037,16 @@ async function pollForAuth(pinId, statusEl) {
   throw new Error('Login timed out. Try again.');
 }
 
-async function renderProfile(enableBackgroundRefresh = true) {
+async function renderProfile(enableBackgroundRefresh = true, routeKey = state.currentRouteKey, routeRenderToken = state.routeRenderToken) {
   let data;
   try {
     data = await loadProfileData(false);
   } catch (error) {
+    if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
     app.innerHTML = `<div class="empty">Failed to load profile: ${error.message}</div>`;
     return;
   }
+  if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
   state.profile = data;
   const downloadPrefix = getDownloadPrefixSettings();
   const actorExampleText = buildDownloadExampleText('actor', downloadPrefix);
@@ -3250,6 +3326,10 @@ function renderScanLogs(actorLogs, showLogs = []) {
 }
 
 function showScanModal(message) {
+  if (scanModalAutoCloseTimer) {
+    clearTimeout(scanModalAutoCloseTimer);
+    scanModalAutoCloseTimer = 0;
+  }
   const modal = document.createElement('div');
   modal.className = 'scan-modal';
   modal.id = 'scan-modal';
@@ -3370,16 +3450,26 @@ async function resetAllPrefixes() {
   }
 }
 
-function showScanSuccessModal(message = 'Scan complete', showConfirm = false) {
+function showScanSuccessModal(message = 'Scan complete', showConfirm = false, autoCloseMs = 0) {
   const iconWrap = document.getElementById('scan-icon-wrap');
   const msg = document.getElementById('scan-modal-msg');
   const okBtn = document.getElementById('scan-modal-ok');
   if (!iconWrap) return;
+  if (scanModalAutoCloseTimer) {
+    clearTimeout(scanModalAutoCloseTimer);
+    scanModalAutoCloseTimer = 0;
+  }
   iconWrap.innerHTML = '<div class="scan-check">&#10003;</div>';
   if (msg) msg.textContent = message;
   if (okBtn) {
     okBtn.classList.toggle('hidden', !showConfirm);
     if (showConfirm) okBtn.focus();
+  }
+  if (!showConfirm && autoCloseMs > 0) {
+    scanModalAutoCloseTimer = window.setTimeout(() => {
+      scanModalAutoCloseTimer = 0;
+      closeScanModal();
+    }, autoCloseMs);
   }
 }
 
@@ -3397,6 +3487,10 @@ function showScanErrorModal(message = 'Scan failed', showConfirm = true) {
 }
 
 function closeScanModal() {
+  if (scanModalAutoCloseTimer) {
+    clearTimeout(scanModalAutoCloseTimer);
+    scanModalAutoCloseTimer = 0;
+  }
   const modal = document.getElementById('scan-modal');
   if (modal) modal.remove();
 }
@@ -3729,8 +3823,9 @@ async function refreshShowsInBackground() {
   }
 }
 
-async function renderCastRoleChooser() {
+async function renderCastRoleChooser(routeKey = state.currentRouteKey, routeRenderToken = state.routeRenderToken) {
   const roleMeta = await api('/api/cast/roles');
+  if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
   const totals = roleMeta?.items || {};
   app.innerHTML = `
     <div class="topbar">
@@ -3764,11 +3859,11 @@ async function renderCastRoleChooser() {
   }
 }
 
-async function renderActors(enableBackgroundRefresh = true) {
+async function renderActors(enableBackgroundRefresh = true, routeKey = state.currentRouteKey, routeRenderToken = state.routeRenderToken) {
   const activeRole = getCastRoleFromQuery();
   if (!CAST_ROLES.includes(activeRole)) {
     state.castRole = '';
-    await renderCastRoleChooser();
+    await renderCastRoleChooser(routeKey, routeRenderToken);
     return;
   }
   state.castRole = activeRole;
@@ -3780,6 +3875,7 @@ async function renderActors(enableBackgroundRefresh = true) {
   } else {
     data = { items: state.actors, last_scan_at: state.profile?.scan_logs?.[0]?.scanned_at || null };
   }
+  if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
 
   if (!state.actors.length) {
     app.innerHTML = `
@@ -3799,7 +3895,7 @@ async function renderActors(enableBackgroundRefresh = true) {
         </button>
         <div class="topbar-title">
           <h2>${roleLabel}</h2>
-          <div class="meta">Total: ${state.actors.length}</div>
+          <div id="actors-topbar-meta" class="meta">${formatTopbarTotals(state.actors.length, 0)}</div>
         </div>
       </div>
       <div class="row">
@@ -3808,7 +3904,7 @@ async function renderActors(enableBackgroundRefresh = true) {
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 1-4.24 10.24A6 6 0 0 1 10 4m0-2a8 8 0 1 0 5.29 14l4.85 4.85 1.41-1.41-4.85-4.85A8 8 0 0 0 10 2Z"/></svg>
           </button>
           <input id="actors-search-input" class="search-input" type="text" placeholder="Search ${roleLabel.toLowerCase()}" value="${state.actorsSearchQuery}" />
-          <button id="actors-search-clear" class="search-clear-btn ${state.actorsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
+          <button id="actors-search-clear" class="search-clear-btn ${state.actorsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">&times;</button>
         </div>
         <select id="actors-sort-by" class="secondary-btn" aria-label="Sort cast by">
           <option value="movies" ${state.actorsSortBy === 'movies' ? 'selected' : ''}>Movies</option>
@@ -3831,7 +3927,7 @@ async function renderActors(enableBackgroundRefresh = true) {
       ${(() => {
         const initials = new Set(state.actors.map((actor) => getActorInitialBucket(actor.name)));
         const dynamicFilters = ACTOR_INITIAL_FILTERS.filter((key) => {
-          if (['Æ', 'Ø', 'Å'].includes(key)) {
+          if (['\u00c6', '\u00d8', '\u00c5'].includes(key)) {
             return initials.has(key);
           }
           return true;
@@ -3998,6 +4094,7 @@ async function renderActors(enableBackgroundRefresh = true) {
       visible = visible.filter((actor) => Number.isFinite(Number(actor.missing_upcoming_count)) && Number(actor.missing_upcoming_count) > 0);
     }
     const renderItems = visible.slice(0, state.actorsVisibleCount);
+    setTopbarTotals('actors-topbar-meta', state.actors.length, renderItems.length);
 
     for (const button of alphabetFilterEl.querySelectorAll('.alpha-btn')) {
       button.classList.remove('active');
@@ -4122,7 +4219,7 @@ async function renderActors(enableBackgroundRefresh = true) {
             if (!updated) continue;
             applyActorMissingScanUpdate(updated);
           }
-          showScanSuccessModal('Actor updated', true);
+          showScanSuccessModal('Actor updated', false, 850);
           renderActors();
         } catch (error) {
           closeScanModal();
@@ -4137,20 +4234,26 @@ async function renderActors(enableBackgroundRefresh = true) {
 
     const remaining = visible.length - renderItems.length;
     if (remaining > 0) {
-      loadMoreWrap.innerHTML = `<button id="actors-load-more" class="secondary-btn">Load more (${remaining})</button>`;
-      document.getElementById('actors-load-more').addEventListener('click', () => {
+      loadMoreWrap.innerHTML = `<div id="actors-load-more-trigger" class="load-more-sentinel" aria-hidden="true" style="height: 1px;"></div>`;
+      const onLoadMore = () => {
         state.actorsVisibleCount += ACTORS_BATCH_SIZE;
         renderActorsGrid(true);
-      });
+      };
+      if (!setupAutoLoadMore('actors-load-more-trigger', onLoadMore)) {
+        loadMoreWrap.innerHTML = `<button id="actors-load-more" class="secondary-btn">Load more (${remaining})</button>`;
+        document.getElementById('actors-load-more').addEventListener('click', onLoadMore);
+      }
     } else {
       loadMoreWrap.innerHTML = '';
+      disconnectAutoLoadMoreObserver();
     }
   };
 
   document.getElementById('actors-alphabet-filter').addEventListener('click', (event) => {
     const target = event.target.closest('.alpha-btn');
     if (!target) return;
-    state.actorsInitialFilter = target.dataset.filter;
+    const nextFilter = target.dataset.filter;
+    state.actorsInitialFilter = state.actorsInitialFilter === nextFilter ? 'All' : nextFilter;
     localStorage.setItem('actorsInitialFilter', state.actorsInitialFilter);
     state.actorsVisibleCount = ACTORS_BATCH_SIZE;
     renderActors();
@@ -4277,13 +4380,14 @@ async function renderActors(enableBackgroundRefresh = true) {
   }
 }
 
-async function renderShows(enableBackgroundRefresh = true) {
+async function renderShows(enableBackgroundRefresh = true, routeKey = state.currentRouteKey, routeRenderToken = state.routeRenderToken) {
   let data = { items: state.shows, last_scan_at: null };
   if (!state.showsLoaded) {
     data = await loadShowsData(false);
   } else {
     data = { items: state.shows, last_scan_at: null };
   }
+  if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
 
   if (!state.shows.length) {
     app.innerHTML = `
@@ -4299,7 +4403,7 @@ async function renderShows(enableBackgroundRefresh = true) {
     <div class="topbar">
       <div class="topbar-title">
         <h2>Shows</h2>
-        <div class="meta">Total: ${state.shows.length}</div>
+        <div id="shows-topbar-meta" class="meta">${formatTopbarTotals(state.shows.length, 0)}</div>
       </div>
       <div class="row">
         <div id="shows-search-control" class="search-control ${state.showsSearchOpen ? 'open' : ''}">
@@ -4307,7 +4411,7 @@ async function renderShows(enableBackgroundRefresh = true) {
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 1-4.24 10.24A6 6 0 0 1 10 4m0-2a8 8 0 1 0 5.29 14l4.85 4.85 1.41-1.41-4.85-4.85A8 8 0 0 0 10 2Z"/></svg>
           </button>
           <input id="shows-search-input" class="search-input" type="text" placeholder="Search shows" value="${state.showsSearchQuery}" />
-          <button id="shows-search-clear" class="search-clear-btn ${state.showsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
+          <button id="shows-search-clear" class="search-clear-btn ${state.showsSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">&times;</button>
         </div>
         <select id="shows-sort-by" class="secondary-btn" aria-label="Sort shows by">
           <option value="date" ${state.showsSortBy === 'date' ? 'selected' : ''}>Date</option>
@@ -4331,7 +4435,7 @@ async function renderShows(enableBackgroundRefresh = true) {
       ${(() => {
         const initials = new Set(state.shows.map((show) => getActorInitialBucket(show.title)));
         const dynamicFilters = ACTOR_INITIAL_FILTERS.filter((key) => {
-          if (['Æ', 'Ø', 'Å'].includes(key)) return initials.has(key);
+          if (['\u00c6', '\u00d8', '\u00c5'].includes(key)) return initials.has(key);
           return true;
         });
         if (!dynamicFilters.includes(state.showsInitialFilter)) {
@@ -4501,6 +4605,7 @@ async function renderShows(enableBackgroundRefresh = true) {
     const isSearching = query.length > 0;
     const visible = getScopedShows(true);
     const renderItems = visible.slice(0, state.showsVisibleCount);
+    setTopbarTotals('shows-topbar-meta', state.shows.length, renderItems.length);
 
     for (const button of alphabetFilterEl.querySelectorAll('.alpha-btn')) {
       button.classList.remove('active');
@@ -4614,7 +4719,7 @@ async function renderShows(enableBackgroundRefresh = true) {
           });
           const updated = Array.isArray(result.items) ? result.items[0] : null;
           if (updated) applyShowMissingScanUpdate(updated);
-          showScanSuccessModal('Show updated', true);
+          showScanSuccessModal('Show updated', false, 850);
           renderShows();
         } catch (error) {
           closeScanModal();
@@ -4631,20 +4736,26 @@ async function renderShows(enableBackgroundRefresh = true) {
 
     const remaining = visible.length - renderItems.length;
     if (remaining > 0) {
-      loadMoreWrap.innerHTML = `<button id="shows-load-more" class="secondary-btn">Load more (${remaining})</button>`;
-      document.getElementById('shows-load-more').addEventListener('click', () => {
+      loadMoreWrap.innerHTML = `<div id="shows-load-more-trigger" class="load-more-sentinel" aria-hidden="true" style="height: 1px;"></div>`;
+      const onLoadMore = () => {
         state.showsVisibleCount += ACTORS_BATCH_SIZE;
         renderShowsGrid(true);
-      });
+      };
+      if (!setupAutoLoadMore('shows-load-more-trigger', onLoadMore)) {
+        loadMoreWrap.innerHTML = `<button id="shows-load-more" class="secondary-btn">Load more (${remaining})</button>`;
+        document.getElementById('shows-load-more').addEventListener('click', onLoadMore);
+      }
     } else {
       loadMoreWrap.innerHTML = '';
+      disconnectAutoLoadMoreObserver();
     }
   };
 
   document.getElementById('shows-alphabet-filter').addEventListener('click', (event) => {
     const target = event.target.closest('.alpha-btn');
     if (!target) return;
-    state.showsInitialFilter = target.dataset.filter;
+    const nextFilter = target.dataset.filter;
+    state.showsInitialFilter = state.showsInitialFilter === nextFilter ? 'All' : nextFilter;
     localStorage.setItem('showsInitialFilter', state.showsInitialFilter);
     state.showsVisibleCount = ACTORS_BATCH_SIZE;
     renderShows();
@@ -4921,7 +5032,11 @@ function startShowEpisodePrefetch(showId, seasonNumbers) {
   }
 }
 
-async function renderShowSeasons(showId) {
+async function renderShowSeasons(showId, routeKey = state.currentRouteKey, routeRenderToken = state.routeRenderToken) {
+  if (state.showSeasonsVisibleKey !== routeKey) {
+    state.showSeasonsVisibleKey = routeKey;
+    state.showSeasonsVisibleCount = ACTORS_BATCH_SIZE;
+  }
   const search = new URLSearchParams(window.location.search);
   const missingOnly = search.get('missingOnly') === '1';
   const inPlexOnly = search.get('inPlexOnly') === '1';
@@ -4949,6 +5064,13 @@ async function renderShowSeasons(showId) {
   }
 
   const data = cachedData || await getShowSeasonsData(showId, missingOnly, inPlexOnly, newOnly, upcomingOnly);
+  if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
+  const baseSeasonsData = (missingOnly || inPlexOnly || newOnly || upcomingOnly)
+    ? (getCachedShowSeasonsData(showId, false, false, false, false)
+      || await getShowSeasonsData(showId, false, false, false, false))
+    : data;
+  if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
+  const totalSeasonsCount = Array.isArray(baseSeasonsData?.items) ? baseSeasonsData.items.length : 0;
 
   app.innerHTML = `
     <div class="topbar">
@@ -4958,7 +5080,7 @@ async function renderShowSeasons(showId) {
         </button>
         <div class="topbar-title">
           <h2>${data.show.title}</h2>
-          <div class="meta">${data.items.length} seasons</div>
+          <div id="show-seasons-topbar-meta" class="meta">${formatTopbarTotals(totalSeasonsCount, data.items.length)}</div>
         </div>
       </div>
       <div class="row">
@@ -4973,6 +5095,7 @@ async function renderShowSeasons(showId) {
       </div>
     </div>
     <section class="grid" id="show-seasons-grid"></section>
+    <div class="load-more-wrap" id="show-seasons-load-more-wrap"></div>
   `;
 
   const pushQuery = (params) => {
@@ -5038,8 +5161,11 @@ async function renderShowSeasons(showId) {
   });
 
   const grid = document.getElementById('show-seasons-grid');
+  const loadMoreWrap = document.getElementById('show-seasons-load-more-wrap');
   if (!data.items.length) {
+    setTopbarTotals('show-seasons-topbar-meta', totalSeasonsCount, 0);
     grid.innerHTML = '<div class="empty">No seasons found.</div>';
+    loadMoreWrap.innerHTML = '';
     return;
   }
 
@@ -5052,8 +5178,10 @@ async function renderShowSeasons(showId) {
   }
 
   const seasonsSource = trackedOnly ? data.items.filter((item) => Boolean(item?.tracked)) : data.items;
+  setTopbarTotals('show-seasons-topbar-meta', totalSeasonsCount, seasonsSource.length);
   if (!seasonsSource.length) {
     grid.innerHTML = '<div class="empty">No seasons found.</div>';
+    loadMoreWrap.innerHTML = '';
     return;
   }
   const seasons = [...seasonsSource].sort((a, b) => {
@@ -5062,8 +5190,10 @@ async function renderShowSeasons(showId) {
     return aNo - bNo;
   });
   if (seasonsSortDir === 'desc') seasons.reverse();
+  const renderItems = seasons.slice(0, state.showSeasonsVisibleCount);
 
-  for (const season of seasons) {
+  grid.innerHTML = '';
+  for (const season of renderItems) {
     const seasonDownloadUrl = buildDownloadLink('season', buildSeasonKeyword(data.show.title, season.season_number));
     const seasonNewCount = Number.isFinite(Number(season.missing_new_count)) ? Number(season.missing_new_count) : 0;
     const seasonOldCount = Number.isFinite(Number(season.missing_old_count)) ? Number(season.missing_old_count) : 0;
@@ -5145,9 +5275,30 @@ async function renderShowSeasons(showId) {
     });
     grid.appendChild(card);
   }
+
+  const remaining = seasons.length - renderItems.length;
+  if (remaining > 0) {
+    loadMoreWrap.innerHTML = `<div id="show-seasons-load-more-trigger" class="load-more-sentinel" aria-hidden="true" style="height: 1px;"></div>`;
+    const onLoadMore = () => {
+      state.showSeasonsVisibleCount += ACTORS_BATCH_SIZE;
+      renderShowSeasons(showId, routeKey, routeRenderToken);
+    };
+    if (!setupAutoLoadMore('show-seasons-load-more-trigger', onLoadMore)) {
+      loadMoreWrap.innerHTML = `<button id="show-seasons-load-more" class="secondary-btn">Load more (${remaining})</button>`;
+      document.getElementById('show-seasons-load-more').addEventListener('click', onLoadMore);
+    }
+  } else {
+    loadMoreWrap.innerHTML = '';
+    disconnectAutoLoadMoreObserver();
+  }
 }
 
-async function renderShowEpisodes(showId, seasonNumber) {
+async function renderShowEpisodes(showId, seasonNumber, routeKey = state.currentRouteKey, routeRenderToken = state.routeRenderToken) {
+  const episodesVisibleKey = `${routeKey}|season:${seasonNumber}`;
+  if (state.showEpisodesVisibleKey !== episodesVisibleKey) {
+    state.showEpisodesVisibleKey = episodesVisibleKey;
+    state.showEpisodesVisibleCount = ACTORS_BATCH_SIZE;
+  }
   const search = new URLSearchParams(window.location.search);
   const missingOnly = search.get('missingOnly') === '1';
   const inPlexOnly = search.get('inPlexOnly') === '1';
@@ -5178,6 +5329,13 @@ async function renderShowEpisodes(showId, seasonNumber) {
   }
 
   const data = cachedData || await getShowEpisodesData(showId, seasonNumber, missingOnly, inPlexOnly, newOnly, upcomingOnly);
+  if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
+  const baseEpisodesData = (missingOnly || inPlexOnly || newOnly || upcomingOnly)
+    ? (getCachedShowEpisodesData(showId, seasonNumber, false, false, false, false)
+      || await getShowEpisodesData(showId, seasonNumber, false, false, false, false))
+    : data;
+  if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
+  const totalEpisodesCount = Array.isArray(baseEpisodesData?.items) ? baseEpisodesData.items.length : 0;
 
   app.innerHTML = `
     <div class="topbar">
@@ -5187,7 +5345,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
         </button>
         <div class="topbar-title">
           <h2>${data.show.title} - Season ${seasonNumber}</h2>
-          <div class="meta">${data.items.length} episodes</div>
+          <div id="show-episodes-topbar-meta" class="meta">${formatTopbarTotals(totalEpisodesCount, data.items.length)}</div>
         </div>
       </div>
       <div class="row">
@@ -5202,6 +5360,7 @@ async function renderShowEpisodes(showId, seasonNumber) {
       </div>
     </div>
     <section class="grid" id="show-episodes-grid"></section>
+    <div class="load-more-wrap" id="show-episodes-load-more-wrap"></div>
   `;
 
   const pushQuery = (params) => {
@@ -5270,13 +5429,18 @@ async function renderShowEpisodes(showId, seasonNumber) {
   });
 
   const grid = document.getElementById('show-episodes-grid');
+  const loadMoreWrap = document.getElementById('show-episodes-load-more-wrap');
   if (!data.items.length) {
+    setTopbarTotals('show-episodes-topbar-meta', totalEpisodesCount, 0);
     grid.innerHTML = '<div class="empty">No episodes found.</div>';
+    loadMoreWrap.innerHTML = '';
     return;
   }
   const episodesSource = trackedOnly ? data.items.filter((item) => Boolean(item?.tracked)) : data.items;
+  setTopbarTotals('show-episodes-topbar-meta', totalEpisodesCount, episodesSource.length);
   if (!episodesSource.length) {
     grid.innerHTML = '<div class="empty">No episodes found.</div>';
+    loadMoreWrap.innerHTML = '';
     return;
   }
   const episodes = [...episodesSource].sort((a, b) => {
@@ -5285,8 +5449,10 @@ async function renderShowEpisodes(showId, seasonNumber) {
     return aNo - bNo;
   });
   if (episodesSortDir === 'desc') episodes.reverse();
+  const renderItems = episodes.slice(0, state.showEpisodesVisibleCount);
 
-  for (const episode of episodes) {
+  grid.innerHTML = '';
+  for (const episode of renderItems) {
     const episodeDownloadUrl = buildDownloadLink(
       'episode',
       buildEpisodeKeyword(data.show.title, seasonNumber, episode.episode_number),
@@ -5425,9 +5591,42 @@ async function renderShowEpisodes(showId, seasonNumber) {
     applyImageFallback(card.querySelector('.poster'), SHOW_PLACEHOLDER);
     grid.appendChild(card);
   }
+
+  const remaining = episodes.length - renderItems.length;
+  if (remaining > 0) {
+    loadMoreWrap.innerHTML = `<div id="show-episodes-load-more-trigger" class="load-more-sentinel" aria-hidden="true" style="height: 1px;"></div>`;
+    const onLoadMore = () => {
+      state.showEpisodesVisibleCount += ACTORS_BATCH_SIZE;
+      renderShowEpisodes(showId, seasonNumber, routeKey, routeRenderToken);
+    };
+    if (!setupAutoLoadMore('show-episodes-load-more-trigger', onLoadMore)) {
+      loadMoreWrap.innerHTML = `<button id="show-episodes-load-more" class="secondary-btn">Load more (${remaining})</button>`;
+      document.getElementById('show-episodes-load-more').addEventListener('click', onLoadMore);
+    }
+  } else {
+    loadMoreWrap.innerHTML = '';
+    disconnectAutoLoadMoreObserver();
+  }
 }
 
-async function renderActorDetail(actorId) {
+async function loadActorDetailBaseData(actorId, castRole, forceRefresh = false) {
+  const cacheKey = getActorDetailCacheKey(actorId, castRole);
+  if (!forceRefresh && state.actorDetailCache[cacheKey]) {
+    return state.actorDetailCache[cacheKey];
+  }
+  const data = await api(
+    `/api/actors/${actorId}/movies?missing_only=false&in_plex_only=false&new_only=false&upcoming_only=false&role=${encodeURIComponent(castRole)}`,
+  );
+  state.actorDetailCache[cacheKey] = data;
+  return data;
+}
+
+async function renderActorDetail(actorId, routeKey = state.currentRouteKey, routeRenderToken = state.routeRenderToken) {
+  const moviesVisibleKey = `${routeKey}|actor:${actorId}`;
+  if (state.moviesVisibleKey !== moviesVisibleKey) {
+    state.moviesVisibleKey = moviesVisibleKey;
+    state.moviesVisibleCount = ACTORS_BATCH_SIZE;
+  }
   const search = new URLSearchParams(window.location.search);
   const castRole = (() => {
     const role = (search.get('role') || state.castRole || '').trim().toLowerCase();
@@ -5446,10 +5645,25 @@ async function renderActorDetail(actorId) {
   const sortBy = rawSortBy === 'year' ? 'date' : rawSortBy;
   const sortDir = search.get('sortDir') || defaultMoviesSortDir;
 
-  const data = await api(`/api/actors/${actorId}/movies?missing_only=${missingOnly}&in_plex_only=${inPlexOnly}&new_only=${newOnly}&upcoming_only=${upcomingOnly}&role=${encodeURIComponent(castRole)}`);
+  const baseData = await loadActorDetailBaseData(actorId, castRole);
+  if (!isActiveRouteRender(routeKey, routeRenderToken)) return;
+  const baseItems = Array.isArray(baseData.items) ? baseData.items : [];
+  const data = {
+    ...baseData,
+    items: baseItems.filter((item) => {
+      const status = String(item?.status || '').trim();
+      if (missingOnly && !(status === 'missing' || status === 'new')) return false;
+      if (inPlexOnly && !item?.in_plex) return false;
+      if (newOnly && status !== 'new') return false;
+      if (upcomingOnly && status !== 'upcoming') return false;
+      if (trackedOnly && !item?.tracked) return false;
+      return true;
+    }),
+  };
   const actorName = data.actor.name;
-  const inPlexCount = data.items.filter((item) => item.in_plex).length;
+  const inPlexCount = baseItems.filter((item) => item.in_plex).length;
   const showCreateCollection = true;
+  const totalMoviesCount = baseItems.length;
   if (state.moviesSearchQuery) {
     state.moviesSearchOpen = true;
   }
@@ -5462,7 +5676,7 @@ async function renderActorDetail(actorId) {
         </button>
         <div class="topbar-title">
           <h2>${actorName}</h2>
-          <div class="meta">${data.items.length} movies</div>
+          <div id="actor-detail-topbar-meta" class="meta">${formatTopbarTotals(totalMoviesCount, data.items.length)}</div>
         </div>
       </div>
       <div class="row">
@@ -5471,7 +5685,7 @@ async function renderActorDetail(actorId) {
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 1-4.24 10.24A6 6 0 0 1 10 4m0-2a8 8 0 1 0 5.29 14l4.85 4.85 1.41-1.41-4.85-4.85A8 8 0 0 0 10 2Z"/></svg>
           </button>
           <input id="movies-search-input" class="search-input" type="text" placeholder="Search movies" value="${state.moviesSearchQuery}" />
-          <button id="movies-search-clear" class="search-clear-btn ${state.moviesSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">×</button>
+          <button id="movies-search-clear" class="search-clear-btn ${state.moviesSearchOpen ? '' : 'hidden'}" title="Clear search" aria-label="Clear search">&times;</button>
         </div>
         <select id="movies-sort-by" class="secondary-btn" aria-label="Sort movies by">
           <option value="date" ${sortBy === 'date' ? 'selected' : ''}>Date</option>
@@ -5494,7 +5708,7 @@ async function renderActorDetail(actorId) {
       ${(() => {
         const initials = new Set(data.items.map((movie) => getActorInitialBucket(movie.title)));
         const dynamicFilters = ACTOR_INITIAL_FILTERS.filter((key) => {
-          if (['Æ', 'Ø', 'Å'].includes(key)) return initials.has(key);
+          if (['\u00c6', '\u00d8', '\u00c5'].includes(key)) return initials.has(key);
           return true;
         });
         if (!dynamicFilters.includes(state.moviesInitialFilter)) {
@@ -5508,6 +5722,7 @@ async function renderActorDetail(actorId) {
     </div>
     <div class="movies-genre-filter" id="movies-genre-filter"></div>
     <section class="grid" id="movies-grid"></section>
+    <div class="load-more-wrap" id="movies-load-more-wrap"></div>
     ${showCreateCollection ? '<button id="create-collection-btn" class="collection-pill-btn"><span class="btn-plus-icon" aria-hidden="true">+</span><span>Create Collection</span></button>' : ''}
   `;
 
@@ -5661,10 +5876,12 @@ async function renderActorDetail(actorId) {
   }
 
   const grid = document.getElementById('movies-grid');
+  const loadMoreWrap = document.getElementById('movies-load-more-wrap');
   const alphabetFilterEl = document.getElementById('movies-alphabet-filter');
   const moviesGenreFilterEl = document.getElementById('movies-genre-filter');
   if (!data.items.length) {
     grid.innerHTML = '<div class="empty">No movies found.</div>';
+    loadMoreWrap.innerHTML = '';
     return;
   }
 
@@ -5750,6 +5967,8 @@ async function renderActorDetail(actorId) {
       ? filteredByGenre.filter((movie) => (movie.title || '').toLowerCase().includes(query))
       : filteredByGenre;
     const scopedVisible = trackedOnly ? visible.filter((movie) => Boolean(movie.tracked)) : visible;
+    const renderItems = scopedVisible.slice(0, state.moviesVisibleCount);
+    setTopbarTotals('actor-detail-topbar-meta', totalMoviesCount, renderItems.length);
 
     for (const button of alphabetFilterEl.querySelectorAll('.alpha-btn')) {
       button.classList.remove('active');
@@ -5762,10 +5981,11 @@ async function renderActorDetail(actorId) {
     grid.innerHTML = '';
     if (!scopedVisible.length) {
       grid.innerHTML = '<div class="empty">No movies found.</div>';
+      loadMoreWrap.innerHTML = '';
       return;
     }
     const selectedGenreLookup = new Set(state.moviesGenreFilters.map(normalizeGenreForCompare));
-    for (const movie of scopedVisible) {
+    for (const movie of renderItems) {
       const card = document.createElement('article');
       const isNew = movie.status === 'new';
       const isUpcoming = movie.status === 'upcoming';
@@ -5858,6 +6078,7 @@ async function renderActorDetail(actorId) {
           if (!exists) next.push(genre);
           state.moviesGenreFilters = next;
           persistMoviesGenreFilterState();
+          state.moviesVisibleCount = ACTORS_BATCH_SIZE;
           renderMoviesGenreFilter();
           renderMoviesGrid();
         });
@@ -5928,13 +6149,31 @@ async function renderActorDetail(actorId) {
       applyImageFallback(card.querySelector('.poster'), MOVIE_PLACEHOLDER);
       grid.appendChild(card);
     }
+
+    const remaining = scopedVisible.length - renderItems.length;
+    if (remaining > 0) {
+      loadMoreWrap.innerHTML = `<div id="movies-load-more-trigger" class="load-more-sentinel" aria-hidden="true" style="height: 1px;"></div>`;
+      const onLoadMore = () => {
+        state.moviesVisibleCount += ACTORS_BATCH_SIZE;
+        renderMoviesGrid();
+      };
+      if (!setupAutoLoadMore('movies-load-more-trigger', onLoadMore)) {
+        loadMoreWrap.innerHTML = `<button id="movies-load-more" class="secondary-btn">Load more (${remaining})</button>`;
+        document.getElementById('movies-load-more').addEventListener('click', onLoadMore);
+      }
+    } else {
+      loadMoreWrap.innerHTML = '';
+      disconnectAutoLoadMoreObserver();
+    }
   };
 
   document.getElementById('movies-alphabet-filter').addEventListener('click', (event) => {
     const target = event.target.closest('.alpha-btn');
     if (!target) return;
-    state.moviesInitialFilter = target.dataset.filter;
+    const nextFilter = target.dataset.filter;
+    state.moviesInitialFilter = state.moviesInitialFilter === nextFilter ? 'All' : nextFilter;
     localStorage.setItem('moviesInitialFilter', state.moviesInitialFilter);
+    state.moviesVisibleCount = ACTORS_BATCH_SIZE;
     renderMoviesGrid();
   });
 
@@ -5945,6 +6184,7 @@ async function renderActorDetail(actorId) {
       if (nextMode !== state.moviesGenreMode) {
         state.moviesGenreMode = nextMode;
         persistMoviesGenreFilterState();
+        state.moviesVisibleCount = ACTORS_BATCH_SIZE;
         renderMoviesGenreFilter();
         renderMoviesGrid();
       }
@@ -5967,6 +6207,7 @@ async function renderActorDetail(actorId) {
     if (!exists) next.push(genre);
     state.moviesGenreFilters = next;
     persistMoviesGenreFilterState();
+    state.moviesVisibleCount = ACTORS_BATCH_SIZE;
     renderMoviesGenreFilter();
     renderMoviesGrid();
   });
@@ -5990,6 +6231,7 @@ async function renderActorDetail(actorId) {
     } else {
       state.moviesSearchQuery = '';
       moviesSearchInput.value = '';
+      state.moviesVisibleCount = ACTORS_BATCH_SIZE;
       renderMoviesGrid();
     }
     updateMoviesSearchClear();
@@ -5997,6 +6239,7 @@ async function renderActorDetail(actorId) {
 
   moviesSearchInput.addEventListener('input', (event) => {
     state.moviesSearchQuery = event.target.value;
+    state.moviesVisibleCount = ACTORS_BATCH_SIZE;
     renderMoviesGrid();
     updateMoviesSearchClear();
   });
@@ -6005,6 +6248,7 @@ async function renderActorDetail(actorId) {
     state.moviesSearchQuery = '';
     moviesSearchInput.value = '';
     moviesSearchInput.focus();
+    state.moviesVisibleCount = ACTORS_BATCH_SIZE;
     renderMoviesGrid();
     updateMoviesSearchClear();
   });

@@ -467,6 +467,276 @@ def get_download_prefix_settings() -> dict[str, str]:
     return merged
 
 
+def _build_plex_movie_match_context(conn) -> dict[str, Any]:
+    plex_rows = [
+        dict(row)
+        for row in conn.execute(
+            '''
+            SELECT
+                plex_rating_key,
+                library_section_id,
+                title,
+                original_title,
+                year,
+                tmdb_id,
+                imdb_id,
+                normalized_title,
+                normalized_original_title,
+                plex_web_url
+            FROM plex_movies
+            '''
+        ).fetchall()
+    ]
+    plex_by_key = {(row['normalized_title'], row['year']): row for row in plex_rows}
+    plex_by_original_key = {
+        (row['normalized_original_title'], row['year']): row
+        for row in plex_rows
+        if row['normalized_original_title']
+    }
+    plex_by_tmdb_id = {row['tmdb_id']: row for row in plex_rows if row['tmdb_id'] is not None}
+    plex_title_buckets: dict[str, list[dict[str, Any]]] = {}
+    plex_original_title_buckets: dict[str, list[dict[str, Any]]] = {}
+    for row in plex_rows:
+        plex_title_buckets.setdefault(row['normalized_title'], []).append(row)
+        if row['normalized_original_title']:
+            plex_original_title_buckets.setdefault(row['normalized_original_title'], []).append(row)
+    return {
+        'plex_by_key': plex_by_key,
+        'plex_by_original_key': plex_by_original_key,
+        'plex_by_tmdb_id': plex_by_tmdb_id,
+        'plex_title_buckets': plex_title_buckets,
+        'plex_original_title_buckets': plex_original_title_buckets,
+    }
+
+
+def _get_tracked_movie_ids(conn) -> set[int]:
+    return {
+        int(row['tmdb_movie_id'])
+        for row in conn.execute('SELECT tmdb_movie_id FROM tracked_movies').fetchall()
+        if row['tmdb_movie_id'] is not None
+    }
+
+
+def _ensure_actor_tmdb_person(conn, actor_data: dict[str, Any], actor_id: str) -> dict[str, Any] | None:
+    if actor_data.get('tmdb_person_id'):
+        return actor_data
+    preferred_department = (
+        'Directing' if actor_data.get('role') == 'director'
+        else ('Writing' if actor_data.get('role') == 'writer' else 'Acting')
+    )
+    person = search_person(actor_data['name'], preferred_department)
+    if not person:
+        return None
+    actor_data['tmdb_person_id'] = person['id']
+    conn.execute(
+        'UPDATE actors SET tmdb_person_id = ?, image_url = COALESCE(image_url, ?), updated_at = ? WHERE actor_id = ?',
+        (person['id'], person['image_url'], datetime.now(UTC).isoformat(), actor_id),
+    )
+    conn.commit()
+    return actor_data
+
+
+def _get_known_show_tracking_entries(
+    conn,
+    show_id: str,
+    season_number: int | None = None,
+) -> tuple[set[int], set[tuple[int, int]]]:
+    season_numbers: set[int] = set()
+    episode_keys: set[tuple[int, int]] = set()
+    params: tuple[Any, ...]
+    season_filter_sql = ''
+    if season_number is None:
+        params = (show_id,)
+    else:
+        season_filter_sql = 'AND season_number = ?'
+        params = (show_id, season_number)
+
+    local_rows = conn.execute(
+        f'''
+        SELECT season_number, episode_number
+        FROM plex_show_episodes
+        WHERE show_id = ? {season_filter_sql}
+        ''',
+        params,
+    ).fetchall()
+    missing_rows = conn.execute(
+        f'''
+        SELECT season_number, episode_number
+        FROM show_missing_episodes
+        WHERE show_id = ? {season_filter_sql}
+        ''',
+        params,
+    ).fetchall()
+
+    for row in [*local_rows, *missing_rows]:
+        try:
+            season_no = int(row['season_number'])
+            episode_no = int(row['episode_number'])
+        except (TypeError, ValueError):
+            continue
+        if season_no <= 0 or episode_no <= 0:
+            continue
+        season_numbers.add(season_no)
+        episode_keys.add((season_no, episode_no))
+
+    return season_numbers, episode_keys
+
+
+def _build_show_season_summary_rows(
+    *,
+    show_id: str,
+    show_plex_url: str | None,
+    plex_rows: list[Any],
+    ignored_episode_keys: set[tuple[int, int]],
+    seasons: list[dict[str, Any]],
+    season_episodes_by_number: dict[int, list[dict[str, Any]]],
+    now_dt: datetime,
+    now_iso: str,
+) -> list[tuple[Any, ...]]:
+    plex_by_season: dict[int, set[int]] = {}
+    plex_season_urls: dict[int, str] = {}
+    for row in plex_rows:
+        try:
+            season_no = int(row['season_number'] or 0)
+            episode_no = int(row['episode_number'] or 0)
+        except (TypeError, ValueError):
+            continue
+        if season_no < 0 or episode_no <= 0:
+            continue
+        plex_by_season.setdefault(season_no, set()).add(episode_no)
+        season_url = row['season_plex_web_url']
+        if season_url and season_no not in plex_season_urls:
+            plex_season_urls[season_no] = season_url
+
+    rows: list[tuple[Any, ...]] = []
+    for season in seasons:
+        season_no = int(season.get('season_number') or 0)
+        if season_no < 0:
+            continue
+        plex_eps = plex_by_season.get(season_no, set())
+        total_eps = int(season.get('episode_count') or 0)
+        count_overflow = len(plex_eps) > total_eps
+        next_upcoming_air_date: str | None = None
+        missing_new_count = 0
+        missing_old_count = 0
+        missing_upcoming_count = 0
+        season_episodes = season_episodes_by_number.get(season_no, [])
+        earliest_episode_air_date: str | None = None
+        earliest_episode_air_dt: datetime | None = None
+        for ep in season_episodes:
+            ep_air_date = str(ep.get('air_date') or '').strip() or None
+            ep_air_dt = _parse_iso_date(ep_air_date)
+            if ep_air_dt is None:
+                continue
+            if earliest_episode_air_dt is None or ep_air_dt < earliest_episode_air_dt:
+                earliest_episode_air_dt = ep_air_dt
+                earliest_episode_air_date = ep_air_date
+        upcoming_dates: list[str] = []
+        for ep in season_episodes:
+            ep_no = int(ep.get('episode_number') or 0)
+            if ep_no <= 0 or ep_no in plex_eps:
+                continue
+            air_date = str(ep.get('air_date') or '').strip() or None
+            status = _classify_missing_air_date(air_date, now_dt=now_dt)
+            if status == 'missing' and (season_no, ep_no) in ignored_episode_keys:
+                continue
+            if status == 'new':
+                missing_new_count += 1
+            elif status == 'upcoming':
+                missing_upcoming_count += 1
+            elif status == 'missing':
+                missing_old_count += 1
+            if status == 'upcoming' and air_date:
+                upcoming_dates.append(air_date)
+        if upcoming_dates:
+            next_upcoming_air_date = min(upcoming_dates)
+        in_plex_complete = (missing_new_count + missing_old_count + missing_upcoming_count) == 0
+        status = 'in_plex'
+        if missing_new_count > 0:
+            status = 'new'
+        elif missing_upcoming_count > 0:
+            status = 'upcoming'
+        elif missing_old_count > 0:
+            status = 'missing'
+        season_air_date = str(season.get('air_date') or '').strip() or None
+        if _parse_iso_date(season_air_date) is None and earliest_episode_air_date:
+            season_air_date = earliest_episode_air_date
+        if season_air_date == '':
+            season_air_date = None
+        season_year_int = 0
+        if season_air_date:
+            parsed = _parse_iso_date(season_air_date)
+            if parsed is not None:
+                season_year_int = parsed.year
+        rows.append(
+            (
+                show_id,
+                season_no,
+                str(season.get('name') or f'Season {season_no}'),
+                total_eps,
+                season_air_date,
+                season.get('poster_url'),
+                season_year_int,
+                1 if in_plex_complete else 0,
+                len(plex_eps),
+                1 if count_overflow else 0,
+                plex_season_urls.get(season_no) or show_plex_url,
+                next_upcoming_air_date,
+                missing_new_count,
+                missing_old_count,
+                missing_upcoming_count,
+                status,
+                now_iso,
+            )
+        )
+    return rows
+
+
+def _build_show_season_items_from_summary_rows(
+    summary_rows: list[Any],
+    *,
+    tracked_show: bool,
+    tracked_seasons: set[int],
+    missing_only: bool,
+    in_plex_only: bool,
+    new_only: bool,
+    upcoming_only: bool,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for row in summary_rows:
+        season_no = int(row['season_number'] or 0)
+        item = {
+            'season_number': season_no,
+            'name': row['name'] or f'Season {season_no}',
+            'episode_count': int(row['episode_count'] or 0),
+            'air_date': row['air_date'],
+            'poster_url': row['poster_url'],
+            'year': int(row['year'] or 0),
+            'in_plex': bool(row['in_plex']),
+            'episodes_in_plex': int(row['episodes_in_plex'] or 0),
+            'count_overflow': bool(row['count_overflow']),
+            'plex_web_url': row['plex_web_url'],
+            'next_upcoming_air_date': row['next_upcoming_air_date'],
+            'missing_new_count': int(row['missing_new_count'] or 0),
+            'missing_old_count': int(row['missing_old_count'] or 0),
+            'missing_upcoming_count': int(row['missing_upcoming_count'] or 0),
+            'status': row['status'] or 'in_plex',
+            'tracked': tracked_show or (season_no in tracked_seasons),
+        }
+        include = True
+        if missing_only and (item['missing_old_count'] + item['missing_new_count']) <= 0:
+            include = False
+        if in_plex_only and not item['in_plex']:
+            include = False
+        if new_only and item['missing_new_count'] <= 0:
+            include = False
+        if upcoming_only and item['missing_upcoming_count'] <= 0:
+            include = False
+        if include:
+            items.append(item)
+    return items
+
+
 def upsert_actor_and_movies(actors: list[dict[str, Any]], movies: list[dict[str, Any]]) -> None:
     with get_conn() as conn:
         existing_actor_rows = conn.execute(
@@ -627,9 +897,17 @@ def _build_actor_movies_payload(
     in_plex_only: bool,
     new_only: bool = False,
     upcoming_only: bool = False,
+    conn=None,
+    plex_match_context: dict[str, Any] | None = None,
+    tracked_movie_ids: set[int] | None = None,
 ) -> dict[str, Any]:
     now_dt = datetime.now(UTC)
-    with get_conn() as conn:
+    owns_conn = conn is None
+    conn_cm = None
+    if owns_conn:
+        conn_cm = get_conn()
+        conn = conn_cm.__enter__()
+    try:
         actor = conn.execute(
             'SELECT actor_id, name, role, tmdb_person_id, image_url, plex_web_url FROM actors WHERE actor_id = ?',
             (actor_id,),
@@ -643,57 +921,25 @@ def _build_actor_movies_payload(
             (actor_id,),
         ).fetchone()
         actor_data['tracked'] = bool(tracked_cast_row)
-        if not actor_data['tmdb_person_id']:
-            preferred_department = (
-                'Directing' if actor_data.get('role') == 'director'
-                else ('Writing' if actor_data.get('role') == 'writer' else 'Acting')
-            )
-            person = search_person(actor_data['name'], preferred_department)
-            if not person:
-                return {'actor': actor_data, 'items': []}
-            actor_data['tmdb_person_id'] = person['id']
-            conn.execute(
-                'UPDATE actors SET tmdb_person_id = ?, image_url = COALESCE(image_url, ?), updated_at = ? WHERE actor_id = ?',
-                (person['id'], person['image_url'], datetime.now(UTC).isoformat(), actor_id),
-            )
-            conn.commit()
-
-        plex_rows = conn.execute(
-            '''
-            SELECT
-                plex_rating_key,
-                library_section_id,
-                title,
-                original_title,
-                year,
-                tmdb_id,
-                imdb_id,
-                normalized_title,
-                normalized_original_title,
-                plex_web_url
-            FROM plex_movies
-            '''
-        ).fetchall()
+        actor_data = _ensure_actor_tmdb_person(conn, actor_data, actor_id)
+        if actor_data is None:
+            actor_data = dict(actor)
+            actor_data['tracked'] = bool(tracked_cast_row)
+            return {'actor': actor_data, 'items': []}
+        if plex_match_context is None:
+            plex_match_context = _build_plex_movie_match_context(conn)
         ignored_movie_ids = _get_ignored_movie_ids(conn, actor_id)
-        tracked_movie_ids = {
-            int(row['tmdb_movie_id'])
-            for row in conn.execute('SELECT tmdb_movie_id FROM tracked_movies').fetchall()
-            if row['tmdb_movie_id'] is not None
-        }
+        if tracked_movie_ids is None:
+            tracked_movie_ids = _get_tracked_movie_ids(conn)
+    finally:
+        if owns_conn and conn_cm is not None:
+            conn_cm.__exit__(None, None, None)
 
-    plex_by_key = {(r['normalized_title'], r['year']): dict(r) for r in plex_rows}
-    plex_by_original_key = {
-        (r['normalized_original_title'], r['year']): dict(r)
-        for r in plex_rows
-        if r['normalized_original_title']
-    }
-    plex_by_tmdb_id = {r['tmdb_id']: dict(r) for r in plex_rows if r['tmdb_id'] is not None}
-    plex_title_buckets: dict[str, list[dict[str, Any]]] = {}
-    plex_original_title_buckets: dict[str, list[dict[str, Any]]] = {}
-    for row in plex_rows:
-        plex_title_buckets.setdefault(row['normalized_title'], []).append(dict(row))
-        if row['normalized_original_title']:
-            plex_original_title_buckets.setdefault(row['normalized_original_title'], []).append(dict(row))
+    plex_by_key = plex_match_context['plex_by_key']
+    plex_by_original_key = plex_match_context['plex_by_original_key']
+    plex_by_tmdb_id = plex_match_context['plex_by_tmdb_id']
+    plex_title_buckets = plex_match_context['plex_title_buckets']
+    plex_original_title_buckets = plex_match_context['plex_original_title_buckets']
 
     try:
         credits = get_person_movie_credits(actor_data['tmdb_person_id'], actor_data.get('role') or 'actor')
@@ -825,6 +1071,7 @@ def upsert_shows_and_episodes(shows: list[dict[str, Any]], episodes: list[dict[s
 
         conn.execute('DELETE FROM plex_shows')
         conn.execute('DELETE FROM plex_show_episodes')
+        conn.execute('DELETE FROM show_seasons_summary')
         conn.executemany(
             '''
             INSERT INTO plex_shows(
@@ -1014,6 +1261,7 @@ def reset_app_state() -> dict[str, bool]:
         conn.execute('DELETE FROM plex_movies')
         conn.execute('DELETE FROM plex_shows')
         conn.execute('DELETE FROM plex_show_episodes')
+        conn.execute('DELETE FROM show_seasons_summary')
         conn.execute('DELETE FROM actor_missing_movies')
         conn.execute('DELETE FROM show_missing_episodes')
         conn.execute('DELETE FROM ignored_movies')
@@ -1036,6 +1284,7 @@ def reset_scan_state() -> dict[str, Any]:
         conn.execute('DELETE FROM plex_movies')
         conn.execute('DELETE FROM plex_shows')
         conn.execute('DELETE FROM plex_show_episodes')
+        conn.execute('DELETE FROM show_seasons_summary')
         conn.execute('DELETE FROM actor_missing_movies')
         conn.execute('DELETE FROM show_missing_episodes')
         conn.execute('DELETE FROM ignored_movies')
@@ -1408,11 +1657,24 @@ def scan_actors_for_missing(payload: ActorMissingScanPayload) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     actor_missing_rows_by_actor: dict[str, list[tuple[Any, ...]]] = {}
     actor_keep_tmdb_ids_by_actor: dict[str, set[int]] = {}
+    with get_conn() as preload_conn:
+        plex_match_context = _build_plex_movie_match_context(preload_conn)
+        tracked_movie_ids = _get_tracked_movie_ids(preload_conn)
 
     for actor_id in unique_actor_ids:
         scanned_total += 1
         try:
-            actor_payload = _build_actor_movies_payload(actor_id, False, False, False, False)
+            with get_conn() as conn:
+                actor_payload = _build_actor_movies_payload(
+                    actor_id,
+                    False,
+                    False,
+                    False,
+                    False,
+                    conn=conn,
+                    plex_match_context=plex_match_context,
+                    tracked_movie_ids=tracked_movie_ids,
+                )
             items = actor_payload.get('items', [])
             movies_in_plex_count = 0
             missing_new_count = 0
@@ -1609,7 +1871,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
         placeholders = ','.join('?' for _ in unique_show_ids)
         show_rows = conn.execute(
             f'''
-            SELECT show_id, title, year, tmdb_show_id
+            SELECT show_id, title, year, tmdb_show_id, plex_web_url
             FROM plex_shows
             WHERE show_id IN ({placeholders})
             ''',
@@ -1618,7 +1880,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
         shows_by_id = {str(row['show_id']): dict(row) for row in show_rows}
         episode_rows = conn.execute(
             f'''
-            SELECT show_id, season_number, episode_number
+            SELECT show_id, season_number, episode_number, season_plex_web_url
             FROM plex_show_episodes
             WHERE show_id IN ({placeholders})
             ''',
@@ -1633,6 +1895,7 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
     failed_total = 0
     scanned_total = 0
     show_missing_rows_by_show: dict[str, list[tuple[Any, ...]]] = {}
+    show_season_summary_rows_by_show: dict[str, list[tuple[Any, ...]]] = {}
     show_keep_keys_by_show: dict[str, set[tuple[int, int]]] = {}
     ignored_episode_keys_by_show: dict[str, set[tuple[int, int]]] = {}
 
@@ -1641,10 +1904,14 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
             ignored_episode_keys_by_show[sid] = _get_ignored_episode_keys(conn, sid)
 
     plex_episode_set_by_show: dict[str, set[tuple[int, int]]] = {sid: set() for sid in unique_show_ids}
+    plex_episode_rows_by_show: dict[str, list[Any]] = {sid: [] for sid in unique_show_ids}
     for row in episode_rows:
         show_id_key = str(row['show_id'])
         season_no = int(row['season_number'] or 0)
         episode_no = int(row['episode_number'] or 0)
+        if show_id_key not in plex_episode_rows_by_show:
+            plex_episode_rows_by_show[show_id_key] = []
+        plex_episode_rows_by_show[show_id_key].append(row)
         if season_no <= 0 or episode_no <= 0:
             continue
         if show_id_key not in plex_episode_set_by_show:
@@ -1718,6 +1985,10 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
                     }
                     for future in as_completed(futures):
                         season_episode_pairs.append((futures[future], future.result()))
+            season_episodes_by_number = {
+                season_number: episodes
+                for season_number, episodes in season_episode_pairs
+            }
             for season_number, episodes in season_episode_pairs:
                 for episode in episodes:
                     episode_number = int(episode.get('episode_number') or 0)
@@ -1777,6 +2048,16 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
             )
             show_keep_keys_by_show[show_id] = missing_episode_keys
             show_missing_rows_by_show[show_id] = show_missing_rows
+            show_season_summary_rows_by_show[show_id] = _build_show_season_summary_rows(
+                show_id=show_id,
+                show_plex_url=show.get('plex_web_url'),
+                plex_rows=plex_episode_rows_by_show.get(show_id, []),
+                ignored_episode_keys=ignored_episode_keys,
+                seasons=seasons,
+                season_episodes_by_number=season_episodes_by_number,
+                now_dt=now_dt,
+                now_iso=now_iso,
+            )
             updates.append(
                 (
                     has_missing,
@@ -1848,6 +2129,34 @@ def scan_shows_for_missing(payload: ShowMissingScanPayload) -> dict[str, Any]:
                             updated_at
                         )
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ''',
+                        rows,
+                    )
+            for show_id, rows in show_season_summary_rows_by_show.items():
+                conn.execute('DELETE FROM show_seasons_summary WHERE show_id = ?', (show_id,))
+                if rows:
+                    conn.executemany(
+                        '''
+                        INSERT INTO show_seasons_summary (
+                            show_id,
+                            season_number,
+                            name,
+                            episode_count,
+                            air_date,
+                            poster_url,
+                            year,
+                            in_plex,
+                            episodes_in_plex,
+                            count_overflow,
+                            plex_web_url,
+                            next_upcoming_air_date,
+                            missing_new_count,
+                            missing_old_count,
+                            missing_upcoming_count,
+                            status,
+                            updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''',
                         rows,
                     )
@@ -2185,10 +2494,12 @@ def discovery_upcoming(limit: int = Query(80, ge=1, le=300)) -> dict[str, Any]:
                 MAX(CASE WHEN t.tmdb_movie_id IS NOT NULL THEN 1 ELSE 0 END) AS tracked
             FROM actor_missing_movies m
             LEFT JOIN tracked_movies t ON t.tmdb_movie_id = m.tmdb_movie_id
+            LEFT JOIN plex_movies pm ON pm.tmdb_id = m.tmdb_movie_id
             WHERE
                 m.ignored = 0
                 AND m.status = 'upcoming'
                 AND m.release_date > ?
+                AND pm.plex_rating_key IS NULL
             GROUP BY m.tmdb_movie_id, m.release_date
             ORDER BY m.release_date ASC, title ASC
             ''',
@@ -2213,6 +2524,10 @@ def discovery_upcoming(limit: int = Query(80, ge=1, le=300)) -> dict[str, Any]:
                 END AS tracked
             FROM show_missing_episodes e
             JOIN plex_shows s ON s.show_id = e.show_id
+            LEFT JOIN plex_show_episodes pe
+                ON pe.show_id = e.show_id
+                AND pe.season_number = e.season_number
+                AND pe.episode_number = e.episode_number
             LEFT JOIN tracked_episodes te
                 ON te.show_id = e.show_id
                 AND te.season_number = e.season_number
@@ -2226,31 +2541,11 @@ def discovery_upcoming(limit: int = Query(80, ge=1, le=300)) -> dict[str, Any]:
                 e.ignored = 0
                 AND e.status = 'upcoming'
                 AND e.air_date > ?
+                AND pe.plex_rating_key IS NULL
             ORDER BY e.air_date ASC, s.title ASC, e.season_number ASC, e.episode_number ASC
             ''',
             (today,),
         ).fetchall()
-        untracked_episode_keys = {
-            (str(row['show_id']), int(row['season_number']), int(row['episode_number']))
-            for row in conn.execute(
-                'SELECT show_id, season_number, episode_number FROM untracked_episodes'
-            ).fetchall()
-            if row['show_id'] is not None and row['season_number'] is not None and row['episode_number'] is not None
-        }
-        untracked_episode_keys = {
-            (str(row['show_id']), int(row['season_number']), int(row['episode_number']))
-            for row in conn.execute(
-                'SELECT show_id, season_number, episode_number FROM untracked_episodes'
-            ).fetchall()
-            if row['show_id'] is not None and row['season_number'] is not None and row['episode_number'] is not None
-        }
-        untracked_episode_keys = {
-            (str(row['show_id']), int(row['season_number']), int(row['episode_number']))
-            for row in conn.execute(
-                'SELECT show_id, season_number, episode_number FROM untracked_episodes'
-            ).fetchall()
-            if row['show_id'] is not None and row['season_number'] is not None and row['episode_number'] is not None
-        }
         untracked_episode_keys = {
             (str(row['show_id']), int(row['season_number']), int(row['episode_number']))
             for row in conn.execute(
@@ -2342,9 +2637,11 @@ def discovery_feed(
                 MAX(CASE WHEN t.tmdb_movie_id IS NOT NULL THEN 1 ELSE 0 END) AS tracked
             FROM actor_missing_movies m
             LEFT JOIN tracked_movies t ON t.tmdb_movie_id = m.tmdb_movie_id
+            LEFT JOIN plex_movies pm ON pm.tmdb_id = m.tmdb_movie_id
             WHERE
                 m.ignored = 0
                 AND m.release_date <= ?
+                AND pm.plex_rating_key IS NULL
             GROUP BY m.tmdb_movie_id, m.release_date
             ''',
             (today,),
@@ -2369,6 +2666,10 @@ def discovery_feed(
                 END AS tracked
             FROM show_missing_episodes e
             JOIN plex_shows s ON s.show_id = e.show_id
+            LEFT JOIN plex_show_episodes pe
+                ON pe.show_id = e.show_id
+                AND pe.season_number = e.season_number
+                AND pe.episode_number = e.episode_number
             LEFT JOIN tracked_episodes te
                 ON te.show_id = e.show_id
                 AND te.season_number = e.season_number
@@ -2381,6 +2682,7 @@ def discovery_feed(
             WHERE
                 e.ignored = 0
                 AND e.air_date <= ?
+                AND pe.plex_rating_key IS NULL
             ''',
             (today,),
         ).fetchall()
@@ -2964,7 +3266,6 @@ def show_seasons(
     new_only: bool = Query(False),
     upcoming_only: bool = Query(False),
 ) -> dict[str, Any]:
-    now_dt = datetime.now(UTC)
     with get_conn() as conn:
         show = conn.execute(
             '''
@@ -3018,6 +3319,51 @@ def show_seasons(
             ).fetchall()
             if row['season_number'] is not None
         }
+        summary_rows = conn.execute(
+            '''
+            SELECT
+                show_id,
+                season_number,
+                name,
+                episode_count,
+                air_date,
+                poster_url,
+                year,
+                in_plex,
+                episodes_in_plex,
+                count_overflow,
+                plex_web_url,
+                next_upcoming_air_date,
+                missing_new_count,
+                missing_old_count,
+                missing_upcoming_count,
+                status,
+                updated_at
+            FROM show_seasons_summary
+            WHERE show_id = ?
+            ORDER BY season_number ASC
+            ''',
+            (show_id,),
+        ).fetchall()
+
+    if summary_rows:
+        items = _build_show_season_items_from_summary_rows(
+            list(summary_rows),
+            tracked_show=tracked_show,
+            tracked_seasons=tracked_seasons,
+            missing_only=missing_only,
+            in_plex_only=in_plex_only,
+            new_only=new_only,
+            upcoming_only=upcoming_only,
+        )
+        return {
+            'show': show_data,
+            'items': items,
+            'missing_only': missing_only,
+            'in_plex_only': in_plex_only,
+            'new_only': new_only,
+            'upcoming_only': upcoming_only,
+        }
 
     plex_by_season: dict[int, set[int]] = {}
     plex_season_urls: dict[int, str] = {}
@@ -3033,97 +3379,64 @@ def show_seasons(
     except TMDbNotConfiguredError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    items: list[dict[str, Any]] = []
-    for season in seasons:
-        season_no = int(season['season_number'])
-        plex_eps = plex_by_season.get(season_no, set())
-        total_eps = int(season.get('episode_count') or 0)
-        in_plex_complete = False
-        count_overflow = len(plex_eps) > total_eps
-        next_upcoming_air_date: str | None = None
-        missing_new_count = 0
-        missing_old_count = 0
-        missing_upcoming_count = 0
-        try:
-            season_episodes = get_tv_season_episodes(int(show_data['tmdb_show_id']), season_no)
-        except TMDbNotConfiguredError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        # Fallback for seasons where TMDb season year/air_date is missing (0/empty):
-        # derive from the earliest valid episode air_date.
-        earliest_episode_air_date: str | None = None
-        earliest_episode_air_dt: datetime | None = None
-        for ep in season_episodes:
-            ep_air_date = str(ep.get('air_date') or '').strip() or None
-            ep_air_dt = _parse_iso_date(ep_air_date)
-            if ep_air_dt is None:
-                continue
-            if earliest_episode_air_dt is None or ep_air_dt < earliest_episode_air_dt:
-                earliest_episode_air_dt = ep_air_dt
-                earliest_episode_air_date = ep_air_date
-        upcoming_dates: list[str] = []
-        for ep in season_episodes:
-            ep_no = int(ep.get('episode_number') or 0)
-            if ep_no <= 0 or ep_no in plex_eps:
-                continue
-            air_date = str(ep.get('air_date') or '').strip() or None
-            status = _classify_missing_air_date(air_date, now_dt=now_dt)
-            if status == 'missing' and (season_no, ep_no) in ignored_episode_keys:
-                continue
-            if status == 'new':
-                missing_new_count += 1
-            elif status == 'upcoming':
-                missing_upcoming_count += 1
-            elif status == 'missing':
-                missing_old_count += 1
-            # Episodes without air_date are ignored for status/counters.
-            if status == 'upcoming' and air_date:
-                upcoming_dates.append(air_date)
-        if upcoming_dates:
-            next_upcoming_air_date = min(upcoming_dates)
-        in_plex_complete = (missing_new_count + missing_old_count + missing_upcoming_count) == 0
-        status = 'in_plex'
-        if missing_new_count > 0:
-            status = 'new'
-        elif missing_upcoming_count > 0:
-            status = 'upcoming'
-        elif missing_old_count > 0:
-            status = 'missing'
-        season_air_date = str(season.get('air_date') or '').strip() or None
-        if _parse_iso_date(season_air_date) is None and earliest_episode_air_date:
-            season_air_date = earliest_episode_air_date
-        season_year_value = season.get('year')
-        try:
-            season_year_int = int(season_year_value) if season_year_value is not None else 0
-        except (TypeError, ValueError):
-            season_year_int = 0
-        if season_year_int <= 0 and earliest_episode_air_dt is not None:
-            season_year_int = earliest_episode_air_dt.year
-        item = {
-            **season,
-            'air_date': season_air_date,
-            'year': season_year_int,
-            'in_plex': in_plex_complete,
-            'episodes_in_plex': len(plex_eps),
-            'count_overflow': count_overflow,
-            'plex_web_url': plex_season_urls.get(season_no) or show_data.get('plex_web_url'),
-            'next_upcoming_air_date': next_upcoming_air_date,
-            'missing_new_count': missing_new_count,
-            'missing_old_count': missing_old_count,
-            'missing_upcoming_count': missing_upcoming_count,
-            'status': status,
-            'tracked': tracked_show or (season_no in tracked_seasons),
-        }
-        include = True
-        if missing_only and (item['missing_old_count'] + item['missing_new_count']) <= 0:
-            include = False
-        if in_plex_only and not item['in_plex']:
-            include = False
-        if new_only and item['missing_new_count'] <= 0:
-            include = False
-        if upcoming_only and item['missing_upcoming_count'] <= 0:
-            include = False
-        if include:
-            items.append(item)
+    season_episodes_by_number: dict[int, list[dict[str, Any]]] = {}
+    season_numbers = [
+        int(season.get('season_number') or 0)
+        for season in seasons
+        if int(season.get('season_number') or 0) > 0
+    ]
+    if season_numbers:
+        with ThreadPoolExecutor(max_workers=min(4, len(season_numbers))) as pool:
+            futures = {
+                pool.submit(get_tv_season_episodes, int(show_data['tmdb_show_id']), season_no): season_no
+                for season_no in season_numbers
+            }
+            for future in as_completed(futures):
+                season_no = futures[future]
+                try:
+                    season_episodes_by_number[season_no] = future.result()
+                except TMDbNotConfiguredError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    summary_rows = _build_show_season_summary_rows(
+        show_id=show_id,
+        show_plex_url=show_data.get('plex_web_url'),
+        plex_rows=list(plex_rows),
+        ignored_episode_keys=ignored_episode_keys,
+        seasons=seasons,
+        season_episodes_by_number=season_episodes_by_number,
+        now_dt=datetime.now(UTC),
+        now_iso=datetime.now(UTC).isoformat(),
+    )
+    items = _build_show_season_items_from_summary_rows(
+        [
+            {
+                'season_number': row[1],
+                'name': row[2],
+                'episode_count': row[3],
+                'air_date': row[4],
+                'poster_url': row[5],
+                'year': row[6],
+                'in_plex': row[7],
+                'episodes_in_plex': row[8],
+                'count_overflow': row[9],
+                'plex_web_url': row[10],
+                'next_upcoming_air_date': row[11],
+                'missing_new_count': row[12],
+                'missing_old_count': row[13],
+                'missing_upcoming_count': row[14],
+                'status': row[15],
+                'updated_at': row[16],
+            }
+            for row in summary_rows
+        ],
+        tracked_show=tracked_show,
+        tracked_seasons=tracked_seasons,
+        missing_only=missing_only,
+        in_plex_only=in_plex_only,
+        new_only=new_only,
+        upcoming_only=upcoming_only,
+    )
 
     return {
         'show': show_data,
@@ -3360,23 +3673,11 @@ def set_movie_tracked(tmdb_movie_id: int, payload: TrackTogglePayload) -> dict[s
 
 @app.post('/api/track/shows/{show_id}')
 def set_show_tracked(show_id: str, payload: TrackTogglePayload) -> dict[str, Any]:
-    seasons_data = show_seasons(show_id, False, False, False, False)
-    season_numbers = [
-        int(item['season_number'])
-        for item in seasons_data.get('items', [])
-        if item.get('season_number') is not None and int(item.get('season_number') or 0) > 0
-    ]
-    episode_keys: set[tuple[int, int]] = set()
-    for season_number in season_numbers:
-        episodes_data = show_season_episodes(show_id, season_number, False, False, False, False)
-        for item in episodes_data.get('items', []):
-            ep_no = int(item.get('episode_number') or 0)
-            if ep_no > 0:
-                episode_keys.add((season_number, ep_no))
     with get_conn() as conn:
         show = conn.execute('SELECT show_id FROM plex_shows WHERE show_id = ?', (show_id,)).fetchone()
         if not show:
             raise HTTPException(status_code=404, detail='Show not found')
+        season_numbers, episode_keys = _get_known_show_tracking_entries(conn, show_id)
         _set_track_show_state(conn, show_id, payload.tracked)
         if payload.tracked:
             conn.execute('DELETE FROM untracked_episodes WHERE show_id = ?', (show_id,))
@@ -3402,16 +3703,12 @@ def set_show_tracked(show_id: str, payload: TrackTogglePayload) -> dict[str, Any
 def set_season_tracked(show_id: str, season_number: int, payload: TrackTogglePayload) -> dict[str, Any]:
     if season_number <= 0:
         raise HTTPException(status_code=400, detail='Invalid season number')
-    episodes_data = show_season_episodes(show_id, season_number, False, False, False, False)
-    episode_numbers = [
-        int(item['episode_number'])
-        for item in episodes_data.get('items', [])
-        if item.get('episode_number') is not None and int(item.get('episode_number') or 0) > 0
-    ]
     with get_conn() as conn:
         show = conn.execute('SELECT show_id FROM plex_shows WHERE show_id = ?', (show_id,)).fetchone()
         if not show:
             raise HTTPException(status_code=404, detail='Show not found')
+        _, episode_keys = _get_known_show_tracking_entries(conn, show_id, season_number)
+        episode_numbers = sorted({episode_no for _, episode_no in episode_keys})
         _set_track_season_state(conn, show_id, season_number, payload.tracked)
         if payload.tracked:
             conn.execute(

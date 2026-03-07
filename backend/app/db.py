@@ -148,6 +148,30 @@ def init_db() -> None:
         )
         conn.execute(
             '''
+            CREATE TABLE IF NOT EXISTS show_seasons_summary (
+                show_id TEXT NOT NULL,
+                season_number INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                episode_count INTEGER NOT NULL,
+                air_date TEXT,
+                poster_url TEXT,
+                year INTEGER,
+                in_plex INTEGER NOT NULL,
+                episodes_in_plex INTEGER NOT NULL,
+                count_overflow INTEGER NOT NULL,
+                plex_web_url TEXT,
+                next_upcoming_air_date TEXT,
+                missing_new_count INTEGER NOT NULL,
+                missing_old_count INTEGER NOT NULL,
+                missing_upcoming_count INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (show_id, season_number)
+            )
+            '''
+        )
+        conn.execute(
+            '''
             CREATE TABLE IF NOT EXISTS tracked_cast (
                 actor_id TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
@@ -340,6 +364,32 @@ def init_db() -> None:
                     ignored INTEGER NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (show_id, season_number, episode_number)
+                )
+                '''
+            )
+        show_season_summary_columns = {row[1] for row in conn.execute("PRAGMA table_info('show_seasons_summary')").fetchall()}
+        if not show_season_summary_columns:
+            conn.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS show_seasons_summary (
+                    show_id TEXT NOT NULL,
+                    season_number INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    episode_count INTEGER NOT NULL,
+                    air_date TEXT,
+                    poster_url TEXT,
+                    year INTEGER,
+                    in_plex INTEGER NOT NULL,
+                    episodes_in_plex INTEGER NOT NULL,
+                    count_overflow INTEGER NOT NULL,
+                    plex_web_url TEXT,
+                    next_upcoming_air_date TEXT,
+                    missing_new_count INTEGER NOT NULL,
+                    missing_old_count INTEGER NOT NULL,
+                    missing_upcoming_count INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (show_id, season_number)
                 )
                 '''
             )
